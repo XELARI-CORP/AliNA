@@ -1,7 +1,7 @@
 import warnings
 import sys
 warnings.simplefilter('always', UserWarning)
-from typing import Union
+from typing import Union, Optional
 from pathlib import Path
 from collections import namedtuple
 
@@ -26,6 +26,7 @@ class AliNA:
                 skip_error_data : bool = False,
                 warn : bool = True,
                 gpu : bool = False,
+                device: Optional[str] = None,
                 weights_path : Union[str, Path, None] = None,
                 model_parameters : Union[dict, None] = None
                 ):
@@ -36,7 +37,7 @@ class AliNA:
         self.device = 'cpu'
         if gpu:
             if torch.cuda.is_available():
-                self.device = 'cuda'
+                self.device = device if device is not None else 'cuda'
             else:
                 warnings.warn('Cuda is not available, AliNA will run on cpu!')
         
