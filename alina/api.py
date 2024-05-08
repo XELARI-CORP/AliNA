@@ -89,14 +89,14 @@ class AliNA:
         
         inp = seq2matrix(padded_seq).reshape((1, 256, 256))
         inp = torch.from_numpy(inp)
-        if self.device=='cuda':
+        if self.device!='cpu':
             inp = inp.to(self.device)
         
         b = self.BATCH(seq=inp)
         with torch.no_grad():
             pred = self.model(b).view((256, 256))
         
-        if self.device=='cuda':
+        if self.device!='cpu':
             pred = pred.to('cpu')
         pred = pred.numpy()
         r = None if r==0 else -r
@@ -123,7 +123,7 @@ class AliNA:
         state = torch.load(weights_path, map_location='cpu')
         model.load_state_dict(state['model_state_dict'])
         
-        if self.device=='cuda':
+        if self.device!='cpu':
             model = model.to(self.device)
         model.eval()
 
