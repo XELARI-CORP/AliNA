@@ -215,8 +215,7 @@ class Alina(nn.Module):
         return (x==0.).float()
         
             
-    def forward(self, batch):
-        seq = batch.seq
+    def forward(self, seq):
         mask = self.get_pad_mask(seq) # b, seq
         att_mask = torch.unsqueeze(torch.unsqueeze(mask, 1), 1) # b, seq(1), heads(1), seq
         

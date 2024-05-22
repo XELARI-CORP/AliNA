@@ -1,18 +1,18 @@
 import warnings
 import sys
 warnings.simplefilter('always', UserWarning)
-from typing import Union, Optional
+from typing import Union, Optional, Tuple
 from pathlib import Path
-from collections import namedtuple
 
 if sys.version_info>=(3, 9):
     import importlib.resources as pkg_resources
 else:
     import importlib_resources as pkg_resources
 
+import numpy as np
 import torch
 
-from .utils import seq2matrix, pad_bounds, quantize_matrix, matrix2struct, validate_sequence, validate_data
+from .utils import seq2matrix, pad_bounds, quantize_matrix, matrix2struct, SequenceError
 from .model import Alina, pretrained_model_parameters
 
 
@@ -20,7 +20,6 @@ from .model import Alina, pretrained_model_parameters
 class AliNA:
     
     PRETRAINED_WEIGHTS = 'Pretrained_augmented.pth'
-    BATCH = namedtuple('Batch', ['seq'])
     
     def __init__(self,
                 skip_error_data : bool = False,
@@ -46,14 +45,20 @@ class AliNA:
         
     def fold(self, 
              seq : Union[str, list],
-             threshold : int = 0.5,
+             threshold : float = 0.5,
              with_probs : bool = False
             ):
         
+        if isinstance(seq, list):
+            for s in seq:
+                if not isinstance(s, str):
+                    raise TypeError(f'Input list must contain only strings, got {type(s)}')
+                    
+        elif not isinstance(seq, str):
+            raise TypeError(f'Input data must be string or list of strings, got {type(seq)}')
+
         if threshold>1 or threshold<0:
             raise ValueError(f'Threshold value must be in the range [0, 1], got {threshold}')
-        
-        validate_data(seq)
         
         single_sequence = False
         if isinstance(seq, str):
@@ -63,7 +68,7 @@ class AliNA:
         results = []
         for n, s in enumerate(seq):
             try:
-                val_s = validate_sequence(s)
+                batch = self.prepare_data(s)
             except Exception as e: 
                 if self.skip_error_data:
                     if self.warn: warnings.warn(str(e))
@@ -72,7 +77,7 @@ class AliNA:
                 else:
                     raise e
                     
-            struct, probs = self._predict(val_s, threshold)
+            struct, probs = self.predict(batch, threshold)
             if with_probs:
                 results.append((struct, probs))
             else:
@@ -83,24 +88,41 @@ class AliNA:
         return results
         
         
-    def _predict(self, seq: str, threshold: float):
+    @staticmethod
+    def prepare_data(seq: str):
+        if not isinstance(seq, str):
+            raise SequenceError(f'Sequence must be a string, got {type(seq)}')
+
+        seq = seq.upper()
+        if len(seq)>256 or len(seq)==0:
+            raise SequenceError(f'Sequence length must be in range (0, 256], got {len(seq)}')
+
+        rn = set(seq) - {'A', 'U', 'G', 'C'}
+        if len(rn)!=0:
+            raise SequenceError(f'Sequence contains unknown symbols: {tuple(rn)}')
+        
         l, r = pad_bounds(seq)
         padded_seq = ''.join(['N'*l, seq, 'N'*r])
+        batch = seq2matrix(padded_seq)
+    
+        return batch, l, r
+    
+    
+    def predict(self, 
+                batch: Tuple[np.ndarray, int, int], 
+                threshold: float = 0.5):
         
-        inp = seq2matrix(padded_seq).reshape((1, 256, 256))
-        inp = torch.from_numpy(inp)
-        if self.device!='cpu':
-            inp = inp.to(self.device)
-        
-        b = self.BATCH(seq=inp)
+        batch, lpad, rpad = batch
+        batch = torch.tensor(batch, dtype=torch.int32, device=self.device)[None, ...]
+            
         with torch.no_grad():
-            pred = self.model(b).view((256, 256))
+            pred = self.model(batch).view((256, 256))
         
         if self.device!='cpu':
             pred = pred.to('cpu')
         pred = pred.numpy()
-        r = None if r==0 else -r
-        pred = pred[l:r, l:r]
+        rpad = None if rpad==0 else -rpad
+        pred = pred[lpad:rpad, lpad:rpad]
         
         M = quantize_matrix(pred, threshold = threshold)
         struct = matrix2struct(M)
