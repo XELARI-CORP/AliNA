@@ -161,3 +161,4 @@ cython_debug/
 
 # tests tmp
 tests/tmp*
+dev/*

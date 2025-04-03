@@ -1,9 +1,9 @@
 import sys
 import os
 import argparse
+import naskit as nsk
 
-from .api import AliNA
-from .utils import NARead, NAWrite
+from .alina import AliNA
 
 
 
@@ -13,36 +13,27 @@ def log(n, N):
     
     
 def process(args):
-    alina = AliNA(
-                skip_error_data = args.skip_errors,
-                warn = not args.no_warn,
-                gpu = args.gpu
-                )
+    alina = AliNA()
+    alina = alina.load(model="pretrained_augmented")
+    if args.gpu:
+        alina = alina.to("cuda")
     
     if args.mode=='seq':
-        pred = alina.fold(args.input, threshold=args.threshold)
-        print(pred)
+        na = alina.fold(args.input, threshold=args.threshold)
+        print(na.struct)
         return
-        
-    with NARead(args.input) as f, NAWrite(args.out) as w:
-        N = len(f)
-        c = 0
-        skipped = 0
-        
-        for n, d in enumerate(f, start=1):
-            name, seq = d
-            pred = alina.fold(seq, threshold=args.threshold)
-            
-            if pred is None:
-                skipped+=1
-                continue
-                
-            w.write((name, seq, pred))
-            c+=1
-            
+
+    with nsk.dotRead(args.input) as f:
+        nas = [na for na in f]
+
+    with nsk.dotWrite(args.out) as w:
+        N = len(nas)
+        for n, na in enumerate(nas, start=1):
+            na = alina.fold(na, threshold=args.threshold)
+            w.write(na)
             log(n, N)
             
-    print(f'\n{c} predictions were written to {args.out}; {skipped} invalid sequences were skiped')
+    print(f'\n{n} predictions were written to {args.out}')
     
     
 def main():
