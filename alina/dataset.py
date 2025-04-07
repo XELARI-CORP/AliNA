@@ -1,4 +1,5 @@
 import pickle
+import tqdm
 import torch
 from .dictionary import mono_pair_dict, dimer_pair_dict
 
@@ -85,7 +86,7 @@ class AlinaDataset:
     
     def save(self, path):
         with open(path, 'wb') as f:
-            pickle.dump({"nas":self.nas, "X":self.X}, f)
+            pickle.dump({"nas":self.nas, "X":self.X, "dimer_embeddings":self.dimer_embeddings}, f)
 
 
     @classmethod
@@ -93,7 +94,7 @@ class AlinaDataset:
         with open(path, 'rb') as f:
             data = pickle.load(f)
 
-        ds = cls(data["nas"])
+        ds = cls(data["nas"], data["dimer_embeddings"])
         ds.X = data["X"]
         return ds
 
@@ -118,7 +119,7 @@ def make_collate(max_len: int, center_pad: bool):
                 X[i, left:(left+n), left:(left+n)] = x
                 Y[i, left:(left+n), left:(left+n)] = y
             else:
-                left, right = 0, (max_len - n)
+                left = 0
                 X[i, :n, :n] = x
                 Y[i, :n, :n] = y
 
