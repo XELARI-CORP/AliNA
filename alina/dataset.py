@@ -18,26 +18,22 @@ class AlinaDataset:
         self.dimer_embeddings = dimer_embeddings
         self.with_adjacency = with_adjacency
 
+        self.seq2matrix_func = self.dimer_seq2matrix if self.dimer_embeddings else self.mono_seq2matrix
+        self.cache_dtype = torch.uint16 if self.dimer_embeddings else torch.uint8
+    
     
     def __len__(self):
         return len(self.nas)
 
     
     def __getitem__(self, n):
-        if self.dimer_embeddings:
-            seq2matrix_func = self.dimer_seq2matrix
-            cache_dtype = torch.uint16
-        else:
-            seq2matrix_func = self.mono_seq2matrix
-            cache_dtype = torch.uint8
-            
         na = self.nas[n]
         
         if self.X[n] is not None:
             x = self.X[n].to(torch.int32)
         else:
-            x = seq2matrix_func(na)    
-            self.X[n] = x.to(cache_dtype)
+            x = self.seq2matrix_func(na)    
+            self.X[n] = x.to(self.cache_dtype)
         
         y = torch.FloatTensor(na.get_adjacency()) if self.with_adjacency else None
         return x, y
