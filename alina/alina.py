@@ -22,6 +22,10 @@ def get_package_path():
     return path
 
 
+class SequenceError(ValueError):
+    pass
+
+    
 class AliNA(Model):
     
     def __init__(self,
@@ -62,6 +66,22 @@ class AliNA(Model):
         state = torch.load(path, map_location='cpu', weights_only=True)
         self.load_state_dict(state['model_state_dict'])
         return self
+
+    
+    def _prepare_data(self, nas):
+        seqs = [na if isinstance(na, str) else na.seq for na in nas]
+        seqs = [seq.upper() for seq in seqs]
+        
+        for seq in seqs:
+            if len(seq)>256 or len(seq)==0:
+                raise SequenceError(f'Sequence length must be in range (0, 256], got {len(seq)}')
+    
+            rn = set(seq) - {'A', 'U', 'G', 'C'}
+            if len(rn)!=0:
+                raise SequenceError(f'Sequence contains unknown symbols: {tuple(rn)}')
+
+        data = [nsk.NA(seq) for seq in seqs]
+        return data
     
     
     def fold(self, 
@@ -76,11 +96,10 @@ class AliNA(Model):
 
         if not isinstance(data, (list, tuple)):
             data = [data]
-        
-        data = [nsk.NA(na) for na in data]
-        assert all([(len(na)>3 and len(na)<=256) for na in data])
+
+        data = self._prepare_data(data)
         dataset = AlinaDataset(data, self.dimer_embeddings)
-        loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, 
+        loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size,
                                              shuffle=False, drop_last=False,
                                              collate_fn=make_collate(256, center_pad = self.center_pad))
             
