@@ -4,6 +4,7 @@ import importlib.resources
 from typing import Union, Optional, Tuple, Iterable
 from pathlib import Path
 
+import tqdm
 import numpy as np
 import torch
 import naskit as nsk
@@ -29,29 +30,53 @@ class SequenceError(ValueError):
 class AliNA(Model):
     
     def __init__(self,
-                 model_parameters: dict = pretrained_model_parameters,
-                 dimer_embeddings: bool = True,
-                 center_pad: bool = True
+                 model_parameters: dict,
+                 dimer_embeddings: bool,
+                 center_pad: bool
                 ):
         super().__init__(**model_parameters)
-        self.dimer_embeddings = dimer_embeddings
-        self.center_pad = center_pad
+        self.__model_params = model_parameters
+        self.__dimer_embeddings = dimer_embeddings
+        self.__center_pad = center_pad
         self.__device = torch.device("cpu")
+    
+    @property
+    def model_params(self):
+        return self.__model_params
+    
+    @property
+    def dimer_embeddings(self):
+        return self.__dimer_embeddings
+    
+    @property
+    def center_pad(self):
+        return self.__center_pad
+
+    @property
+    def device(self):
+        return self.__device
+
+    @property
+    def state(self):
+        return {
+            "model_state_dict":self.state_dict(),
+            "model_params":self.__model_params,
+            "dimer_embeddings":self.__dimer_embeddings,
+            "center_pad":self.__center_pad
+        }
 
 
+    @torch.compiler.disable(recursive=True)
     def to(self, device: Union[str, torch.device]):
         device = torch.device(device)
         super().to(device)
         self.__device = device
         return self
 
-    
-    @property
-    def device(self):
-        return self.__device
         
-        
-    def load(self, *,
+    @classmethod
+    @torch.compiler.disable(recursive=True)
+    def load(cls, *,
              model: Optional[str] = None,
              path: Optional[Union[str, Path]] = None
             ):
@@ -64,10 +89,16 @@ class AliNA(Model):
                 raise ValueError(f"Unknown model name {model}. Choose from: ['pretrained_augmented']")
         
         state = torch.load(path, map_location='cpu', weights_only=True)
-        self.load_state_dict(state['model_state_dict'])
-        return self
+        model = cls(
+            model_parameters = state["model_params"],
+            dimer_embeddings = state["dimer_embeddings"],
+            center_pad = state["center_pad"]
+        )
+        model.load_state_dict(state["model_state_dict"])
+        return model
 
-    
+
+    @torch.compiler.disable(recursive=False)
     def _prepare_data(self, nas):
         seqs = [na if isinstance(na, str) else na.seq for na in nas]
         seqs = [seq.upper() for seq in seqs]
@@ -83,12 +114,14 @@ class AliNA(Model):
         data = [nsk.NA(seq) for seq in seqs]
         return data
     
-    
+
+    @torch.compiler.disable(recursive=False)
     def fold(self, 
              data: Union[str, nsk.NucleicAcid, Iterable[Union[str, nsk.NucleicAcid]]],
              threshold: float = 0.5,
              with_probs: bool = False,
-             batch_size: int = 8
+             batch_size: int = 8,
+             verbose: bool = False
             ):
         
         if threshold>1 or threshold<0:
@@ -105,8 +138,9 @@ class AliNA(Model):
             
         preds, ls, sls = [], [], []
         self.eval()
+        iter_wrapper = tqdm.tqdm if verbose else iter
         with torch.no_grad():
-            for x, _, l, sl in loader:
+            for x, _, l, sl in iter_wrapper(loader):
                 x = x.to(self.device)
                 pred = self(x)
                 preds.append(pred.cpu())
@@ -124,8 +158,9 @@ class AliNA(Model):
 
         out = (nas, preds) if with_probs else nas
         return out
-    
 
+    
+    @torch.compiler.disable(recursive=True)
     def quantize_matrix(self, M, threshold = 0.5):
         seq_length = M.shape[-1]
         diag = 1 - torch.diag(torch.ones(seq_length))
