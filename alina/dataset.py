@@ -103,21 +103,21 @@ class AlinaDataset:
 
 def make_collate(max_len: int, center_pad: bool):
     def collate_fn(dps):
+        with_adjacency = dps[0][1] is not None
+        
         X = torch.zeros((len(dps), max_len, max_len), dtype=torch.int32)
-        Y = torch.zeros((len(dps), max_len, max_len), dtype=torch.float32)
+        Y = torch.zeros((len(dps), max_len, max_len), dtype=torch.float32) if with_adjacency else None
         L, Sl = [], []
         
         for i, (x, y) in enumerate(dps):
             n = x.shape[0]
 
-            if center_pad:
-                left = (max_len - n)// 2
-                X[i, left:(left+n), left:(left+n)] = x
-                Y[i, left:(left+n), left:(left+n)] = y
-            else:
-                left = 0
-                X[i, :n, :n] = x
-                Y[i, :n, :n] = y
+            left = (max_len - n)//2 if center_pad else 0
+            until = (left+n) if center_pad else n
+
+            X[i, left:until, left:until] = x
+            if with_adjacency:
+                Y[i, left:until, left:until] = y
 
             L.append(left)
             Sl.append(n)

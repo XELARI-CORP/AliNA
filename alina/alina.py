@@ -100,18 +100,16 @@ class AliNA(Model):
 
     @torch.compiler.disable(recursive=False)
     def _prepare_data(self, nas):
-        seqs = [na if isinstance(na, str) else na.seq for na in nas]
-        seqs = [seq.upper() for seq in seqs]
-        
-        for seq in seqs:
-            if len(seq)>256 or len(seq)==0:
-                raise SequenceError(f'Sequence length must be in range (0, 256], got {len(seq)}')
-    
+        for na in nas:
+            if len(na)>256 or len(na)==0:
+                raise SequenceError(f'Sequence length must be in range (0, 256], got {len(na)}')
+
+            seq = na if isinstance(na, str) else na.seq
             rn = set(seq) - {'A', 'U', 'G', 'C'}
             if len(rn)!=0:
                 raise SequenceError(f'Sequence contains unknown symbols: {tuple(rn)}')
 
-        data = [nsk.NA(seq) for seq in seqs]
+        data = [nsk.NA(na) for na in nas]
         return data
     
 
@@ -131,7 +129,7 @@ class AliNA(Model):
             data = [data]
 
         data = self._prepare_data(data)
-        dataset = AlinaDataset(data, self.dimer_embeddings)
+        dataset = AlinaDataset(data, self.dimer_embeddings, with_adjacency=False)
         loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size,
                                              shuffle=False, drop_last=False,
                                              collate_fn=make_collate(256, center_pad = self.center_pad))
