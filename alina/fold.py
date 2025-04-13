@@ -13,8 +13,7 @@ def log(n, N):
     
     
 def process(args):
-    alina = AliNA()
-    alina = alina.load(model="pretrained_augmented")
+    alina = AliNA.load(model="pretrained_augmented")
     if args.gpu:
         alina = alina.to("cuda")
     
