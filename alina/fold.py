@@ -1,21 +1,18 @@
 import sys
 import os
 import argparse
+import torch
 import naskit as nsk
 
 from .alina import AliNA
 
 
-
-def log(n, N):
-    x = int(20*n/N)
-    print(f"\r|{'-'*x}>{'.'*(20-x)}| {n} / {N}", end='')
-    
     
 def process(args):
     alina = AliNA.load(model="pretrained_augmented")
-    if args.gpu:
-        alina = alina.to("cuda")
+    
+    device = torch.device(args.device)
+    alina = alina.to(device)
     
     if args.mode=='seq':
         na = alina.fold(args.input, threshold=args.threshold)
@@ -25,14 +22,13 @@ def process(args):
     with nsk.dotRead(args.input) as f:
         nas = [na for na in f]
 
+    nas = alina.fold(nas, threshold=args.threshold, batch_size=args.batch_size, verbose=True)
+    
     with nsk.dotWrite(args.out) as w:
-        N = len(nas)
-        for n, na in enumerate(nas, start=1):
-            na = alina.fold(na, threshold=args.threshold)
+        for na in nas:
             w.write(na)
-            log(n, N)
             
-    print(f'\n{n} predictions were written to {args.out}')
+    print(f'\n{len(nas)} predictions were written to {args.out}')
     
     
 def main():
@@ -51,15 +47,12 @@ def main():
     
     parser.add_argument('-th', '--threshold', type=float, default=0.5, metavar='<Threshold value>',
                         help="Threshold value in range [0, 1] for output processing. The bigger value gives less complementary bonds. Default - 0.5")
+
+    parser.add_argument('-bs', '--batch_size', type=int, default=8, metavar='<Batch size>',
+                        help="Batch size for file mode. Default - 8.")
     
-    parser.add_argument('--gpu', default=False, action='store_true', 
-                        help='Run model on gpu if CUDA is available. Default - run on cpu.')
-    
-    parser.add_argument('--skip-errors', default=False, action='store_true', 
-                        help='Skip invalid sequences instead of raising SequenceError. Default - False.')
-    
-    parser.add_argument('--no-warn', default=False, action='store_true', 
-                        help='Do not raise warning on invalid sequnce skip. Default - False.')
+    parser.add_argument('-d', '--device', type=str, default="cpu", metavar='<Model device>', 
+                        help='Pytorch device to run model. Default - cpu.')
     
     args = parser.parse_args()
     
