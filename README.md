@@ -24,22 +24,17 @@ Installation
     ```
     - Using conda:
     ```
-    conda create --name Alina_venv python=3.10
+    conda create --name Alina_venv
     conda activate Alina_venv
     ```
 - Install AliNA as an editable package:
     ```
     python3 -m pip install -e .
     ```
-- PyTorch is required for AliNA to work. It is not installed automatically, since you have to specify your CUDA version and operating system. See the official [install](https://pytorch.org/get-started/locally/) page for more detail. Stable PyTorch version for AliNA is 1.11. If GPU usage is not important for you, just try:
+- PyTorch is required for AliNA to work. It is not installed automatically, since you have to specify your CUDA version and operating system. See the official [install](https://pytorch.org/get-started/locally/) page for more detail. If GPU usage is not important for you, just try:
 
     ```
-    python3 -m pip install torch==1.11
-    ```
-- Test AliNA:
-    ```
-    python3 -m pip install -e .[dev]
-    pytest tests --verbose
+    python3 -m pip install torch
     ```
 
 Usage
@@ -69,11 +64,9 @@ alina [-h] [-m {seq,file}] -i <Sequence or Fasta file> [-o <Output file>] [-th <
 
 **-th, --threshold** - specifies the sensitivity threshold when processing predictions **[0, 1]**. The lower the threshold the more bonds will be included into the predicted structure. Unless specified explicitly, the default value is 0.5.
 
-**--gpu** - run model using GPU if CUDA is available. Default - run on CPU only.
+**-bs, --batch_size** - Batch size for file mode. Default - 8.
 
-**--skip-errors** - Skip invalid sequences instead of raising SequenceError. Default - False.
-
-**--no-warn** - Do not raise warning on invalid sequnce skip. Default - False.
+**-d, --device** - Pytorch device to run model. Default - CPU.
 
 **-h, --help** - show help message.
 
@@ -83,9 +76,8 @@ alina [-h] [-m {seq,file}] -i <Sequence or Fasta file> [-o <Output file>] [-th <
 ```
 import alina
 
-Alina = alina.AliNA(skip_error_data = False,
-                    warn = True,
-                    gpu = False)
+Alina = alina.AliNA.load(model="pretrained_augmented")
+Alina = Alina.to("cuda")
                 
 struct = Alina.fold('UAGCGUAGGGGAAACGCCCGGUUACAUU')
 struct
@@ -127,7 +119,7 @@ plt.imshow(p)
 <img src="img/probs.png" width=350px/>
 
 ```
-q = alina.utils.quantize_matrix(p, threshold = 0.5)
+q = Alina.quantize_matrix(p, threshold = 0.5)
 plt.imshow(q)
 ```
 
