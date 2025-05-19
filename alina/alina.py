@@ -86,11 +86,11 @@ class AliNA(Model):
             if model == "pretrained_augmented":
                 path = package_path/"model"/"Pretrained_augmented.pth"
             elif model == "ngs_mfe_augmented":
-                path = package_path/"model"/"Ngs_mfe_augmented.pth" #!update
+                path = package_path/"model"/"Ngs_mfe_augmented.pth"
             else:
-                raise ValueError(f"Unknown model name {model}. Choose from: ['pretrained_augmented']")
+                raise ValueError(f"Unknown model name {model}. Choose from: ['pretrained_augmented', 'ngs_mfe_augmented']")
         
-        state = torch.load(path, map_location='cpu', weights_only=True) #?
+        state = torch.load(path, map_location='cpu', weights_only=True)
         model = cls(
             model_parameters = state["model_params"],
             dimer_embeddings = state["dimer_embeddings"],
