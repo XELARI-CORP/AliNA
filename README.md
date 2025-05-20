@@ -37,6 +37,11 @@ Installation
     python3 -m pip install torch
     ```
 
+Models
+===
+- 'pretrained_augmented' - model from the original article trained on rnafold augmented structures and tuned on rfam data.
+- 'ngs_mfe_augmented' - model trained on rnafold augmented structures and tuned on NGS/coevolution filtered data (May 2025). More reliable.
+
 Usage
 ===
 
