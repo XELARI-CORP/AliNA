@@ -9,7 +9,7 @@ Installation
 
 - Download the repository and change directory: 
     ```
-    git clone https://github.com/NANOBIOROBOTS-INC/AliNA.git
+    git clone https://github.com/XELARI-CORP/AliNA.git
     cd AliNA
     ```
     
