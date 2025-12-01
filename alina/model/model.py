@@ -1,115 +1,82 @@
 import torch
 import torch.nn as nn
-from torch.nn import functional as F
 
-from .modules import pos_enc, ConvLayerNorm, ConvBlock, MHAttention, EncoderLayer
+from .modules import EncoderLayer, PirwiseHead
 
 
 class Model(nn.Module):
-    def __init__(self, 
-                 vocab: int, 
-                 emb: int, 
+    def __init__(self,
+                 vocab_size: int,
                  dim: int, 
-                 layers: int, 
-                 heads: int, 
-                 channels: int, 
-                 convdrop: float
+                 conv_layers: int,
+                 encoder_layers: int,
+                 heads: int,
+                 convdrop: float,
+                 conv_activation,
+                 norm_layer
                 ):
         super().__init__()
+        self.dim = dim
         
-        self.embedding = nn.Embedding(vocab, emb)
+        self.embedding = nn.Embedding(vocab_size, dim)
+        self.conv_model = nn.Sequential()
+        for i in range(conv_layers):
+            if i>0:
+                self.conv_model.append(nn.Dropout(convdrop))
+
+            layer = nn.Conv1d(dim, dim, kernel_size=3, stride=1, padding="same")
+            if (i+1)<conv_layers:
+                torch.nn.init.kaiming_uniform_(layer.weight, nonlinearity='relu')
+                self.conv_model.append(layer)
+                self.conv_model.append(conv_activation())
+            else:
+                torch.nn.init.xavier_uniform_(layer.weight, gain=1.0)
+                self.conv_model.append(layer)
         
-        # ENCODER
-        self.pool = nn.MaxPool2d(2, stride=2)
-        self.EncCVBlock1 = ConvBlock(emb, channels[0], convdrop)
-        self.EncCVBlock2 = ConvBlock(channels[0], channels[1], convdrop)
-        self.EncCVBlock3 = ConvBlock(channels[1], channels[2], convdrop)
-        self.EncCVBlock4 = ConvBlock(channels[2], channels[3], convdrop)
-        
-        # MIDDLE
-        self.postpool = nn.Linear(channels[3], dim)
-        torch.nn.init.xavier_uniform_(self.postpool.weight, gain=1.0)
-        
-        self.PE = torch.nn.parameter.Parameter(pos_enc(seq=256, dim=dim), requires_grad=False)
         self.encoders_list = nn.ModuleList()
-        for i in range(layers):
-            self.encoders_list.append(EncoderLayer(dim=dim, heads=heads, do=0.1))
+        for i in range(encoder_layers):
+            self.encoders_list.append(EncoderLayer(dim=dim, heads=heads, do=0.1, norm_layer=norm_layer))
 
-        # DECODER
-        self.upsample = nn.Upsample(scale_factor=2, mode='bilinear')
-        self.DecCVBlock1 = ConvBlock((dim+channels[3]), channels[-1], convdrop)
-        self.DecCVBlock2 = ConvBlock(channels[-2]+channels[-1], channels[-2], convdrop)
-        self.DecCVBlock3 = ConvBlock(channels[-3]+channels[-2], channels[-3], convdrop)
-        self.DecCVBlock4 = ConvBlock(channels[-4]+channels[-3], channels[-4], convdrop)
+        self.final_norm = norm_layer(dim)
+        self.final_project = nn.Linear(dim, dim//4)
+        torch.nn.init.xavier_uniform_(self.final_project.weight, gain=1.0)
+        self.head = PirwiseHead(dim//4)
+
+
+    @torch.compile
+    def pos_enc(self, seq: int, dim: int):
+        div  = 10000**(2 * (torch.arange(dim, dtype=torch.float32) // 2) / dim)
+        pos_enc = torch.arange(seq, dtype=torch.float32)
+        pos_enc = pos_enc.view(seq, 1).repeat(1, dim) / div
         
-        # OUT    
-        self.out = nn.Conv2d(channels[-4], 1, kernel_size=(1,1), stride=1, padding='valid')
-        torch.nn.init.xavier_uniform_(self.out.weight, gain=1.0)
-        
-        
-    def get_pad_mask(self, x):
-        x = x.view(-1, 16, 16, 256)
-        x = torch.permute(x, (0, 1, 3, 2)).contiguous() # b, Hpatch, patch_dim, W -> b, Hpatch, W, patch_dim
-        x = x.view(-1, 16**2, 16**2) # b, Hpatch, W, patch_dim -> b, Hpatch*Wpatch, patch_dim*patch_dim
-        
-        x = torch.sum(x, dim=-1, keepdim=False) # b, Hpatch*Wpatch
-        return (x==0.).float()
+        pos_enc[1:, 0::2] = torch.sin(pos_enc[1:, 0::2]) # dim 2i
+        pos_enc[1:, 1::2] = torch.cos(pos_enc[1:, 1::2]) # dim 2i+1
+
+        return pos_enc
         
             
-    def forward(self, x):
-        mask = self.get_pad_mask(x) # b, seq, seq
-        att_mask = torch.unsqueeze(torch.unsqueeze(mask, 1), 1) # b, seq(1), heads(1), seq
+    def forward(self, seq): 
         
-        # EMB
-        x = self.embedding(x) # b, 256H, 256W, emb
-        x = torch.permute(x, (0, 3, 1, 2)).contiguous() # b, dim, 256H, 256W
-        
-        # ENCODER
-        x1 = self.EncCVBlock1(x) # b, 16, 256, 256 -> b, 32, 256, 256
-        x = self.pool(x1) # b, 32, 256, 256 -> b, 32, 128, 128
+        x = self.embedding(seq) # b, seq, dim
+        x = torch.transpose(x, 1, 2) # -> b, dim, seq
+        x = self.conv_model(x)
+        x = torch.transpose(x, 1, 2) # -> b, seq, dim
 
-        x2 = self.EncCVBlock2(x) # b, 32, 128, 128 -> b, 64, 128, 128
-        x = self.pool(x2) # b, 64, 128, 128 -> b, 64, 64, 64
+        x += self.pos_enc(x.size(1), x.size(2)).to(x.dtype).to(x.device)
 
-        x3 = self.EncCVBlock3(x) # b, 64, 64, 64 -> b, 128, 64, 64
-        x = self.pool(x3) # b, 128, 64, 64 -> b, 128, 32, 32
-
-        x4 = self.EncCVBlock4(x) # b, 128, 32, 32 -> b, 256, 32, 32
-        x = self.pool(x4) # b, 256, 32, 32 -> b, 256, 16, 16
-        
-        # MIDDLE
-        x = torch.permute(x, (0, 2, 3, 1)).contiguous() # b, dim, 16, 16 -> b, 16, 16, dim
-        x = x.view(-1, 256, x.shape[-1]) # b, 16, 16, dim -> b, seq(256), dim
-        x = self.postpool(x)
-        x += self.PE
-        
+        att_mask = (seq==0).to(x.dtype).view(seq.size(0), 1, 1, seq.size(1)) # b, seq -> b, 1, 1, seq
         for l in self.encoders_list:
-            x = l([x, x, x, att_mask])
+            x = l(x, att_mask)
             
-        x = x.view(-1, 16, 16, x.shape[-1])
-        x = torch.permute(x, (0, 3, 1, 2)).contiguous() # b, H, W, dim -> b, dim, H, W
-            
-        # DECODER
-        x = self.upsample(x) # b, 256, 16, 16 -> # b, 256, 32, 32
-        x = torch.cat((x, x4), 1) # b, 256, 32, 32 + b, 256, 32, 32 -> b, 512, 32, 32
-        x = self.DecCVBlock1(x) # b, 512, 32, 32 -> b, 256, 32, 32
-
-        x = self.upsample(x) # b, 256, 32, 32 -> b, 256, 64, 64
-        x = torch.cat((x, x3), 1) # b, 256, 64, 64 + b, 128, 64, 64 -> b, 384, 64, 64
-        x = self.DecCVBlock2(x) # b, 384, 64, 64 -> b, 128, 64, 64
-
-        x = self.upsample(x) # b, 128, 64, 64 -> b, 128, 128, 128
-        x = torch.cat((x, x2), 1) # b, 128, 128, 128 + b, 64, 128, 128 -> b, 192, 128, 128
-        x = self.DecCVBlock3(x) # b, 192, 128, 128 -> b, 64, 128, 128
-
-        x = self.upsample(x) # b, 64, 128, 128 -> b, 64, 256, 256
-        x = torch.cat((x, x1), 1) # b, 64, 256, 256 + b, 32, 256, 256 -> b, 96, 256, 256
-        x = self.DecCVBlock4(x) # b, 96, 256, 256 -> b, 32, 256, 256
-        
-        # HEAD
-        x = self.out(x)
-        x = x.squeeze(1) # b, 32, 256, 256 -> b, 256, 256
+        x = self.final_norm(x)
+        x = self.final_project(x)
+        x = self.head(x)
         x = torch.sigmoid(x)
+
+        diag_mask = 1. - torch.diag(
+            torch.ones(x.size(1), dtype=x.dtype, device=x.device)
+        ).unsqueeze(0)
+        x = x * diag_mask
         
         return x
 

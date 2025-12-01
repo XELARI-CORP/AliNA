@@ -1,7 +1,7 @@
 import warnings
 import sys
 import importlib.resources
-from typing import Union, Optional, Tuple, Iterable
+from typing import Union, Optional, List
 from pathlib import Path
 
 import tqdm
@@ -9,7 +9,7 @@ import numpy as np
 import torch
 import naskit as nsk
 
-from .dataset import AlinaDataset, make_collate
+from .dataset import AlinaDataset, collate_fn
 from .model import Model, pretrained_model_parameters
 
 
@@ -29,29 +29,15 @@ class SequenceError(ValueError):
     
 class AliNA(Model):
     
-    def __init__(self,
-                 model_parameters: dict,
-                 dimer_embeddings: bool,
-                 center_pad: bool
-                ):
+    def __init__(self, model_parameters: dict):
         super().__init__(**model_parameters)
         self.__model_params = model_parameters
-        self.__dimer_embeddings = dimer_embeddings
-        self.__center_pad = center_pad
         self.__device = torch.device("cpu")
     
     @property
     def model_params(self):
         return self.__model_params
     
-    @property
-    def dimer_embeddings(self):
-        return self.__dimer_embeddings
-    
-    @property
-    def center_pad(self):
-        return self.__center_pad
-
     @property
     def device(self):
         return self.__device
@@ -61,8 +47,6 @@ class AliNA(Model):
         return {
             "model_state_dict":self.state_dict(),
             "model_params":self.__model_params,
-            "dimer_embeddings":self.__dimer_embeddings,
-            "center_pad":self.__center_pad
         }
 
 
@@ -117,7 +101,7 @@ class AliNA(Model):
 
     @torch.compiler.disable(recursive=False)
     def fold(self, 
-             data: Union[str, nsk.NucleicAcid, Iterable[Union[str, nsk.NucleicAcid]]],
+             data: Union[str, nsk.NucleicAcid, List[Union[str, nsk.NucleicAcid]]],
              threshold: float = 0.5,
              with_probs: bool = False,
              batch_size: int = 8,
@@ -131,7 +115,7 @@ class AliNA(Model):
             data = [data]
 
         data = self._prepare_data(data)
-        dataset = AlinaDataset(data, self.dimer_embeddings, with_adjacency=False)
+        dataset = AlinaDataset(data, with_adjacency=False)
         loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size,
                                              shuffle=False, drop_last=False,
                                              collate_fn=make_collate(256, center_pad = self.center_pad))
