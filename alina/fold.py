@@ -9,7 +9,7 @@ from .alina import AliNA
 
     
 def process(args):
-    alina = AliNA.load(model="pretrained_augmented")
+    alina = AliNA.load()
     
     device = torch.device(args.device)
     alina = alina.to(device)
