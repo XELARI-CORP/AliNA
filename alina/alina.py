@@ -168,6 +168,10 @@ class AliNA(Model):
         return x
         
         
+    def sanity_check(self, batch: int = 2, seq: int = 32):
+        x = torch.ones(batch, seq, dtype=torch.int32, device=self.device)
+        with torch.no_grad():
+            return self(x)
         
         
         

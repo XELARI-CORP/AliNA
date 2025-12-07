@@ -1,7 +1,8 @@
+import math
 import torch
 import torch.nn as nn
 
-from .modules import EncoderLayer, PirwiseHead
+from .modules import EncoderLayer
 
 
 class Model(nn.Module):
@@ -13,10 +14,13 @@ class Model(nn.Module):
                  heads: int,
                  convdrop: float,
                  conv_activation,
-                 norm_layer
+                 norm_layer,
+                 final_heads: int,
+                 final_head_dim: int
                 ):
         super().__init__()
         self.dim = dim
+        self.final_dot_norm = math.sqrt(dim)
         
         self.embedding = nn.Embedding(vocab_size, dim)
         self.conv_model = nn.Sequential()
@@ -38,9 +42,10 @@ class Model(nn.Module):
             self.encoders_list.append(EncoderLayer(dim=dim, heads=heads, do=0.1, norm_layer=norm_layer))
 
         self.final_norm = norm_layer(dim)
-        self.final_project = nn.Linear(dim, dim//4)
-        torch.nn.init.xavier_uniform_(self.final_project.weight, gain=1.0)
-        self.head = PirwiseHead(dim//4)
+        self.final_linear = nn.Linear(dim, dim)
+        torch.nn.init.xavier_uniform_(self.final_linear.weight, gain=1.0)
+        torch.nn.init.zeros_(self.final_linear.bias)
+        self.final_bias = torch.nn.Parameter(torch.tensor(0.), requires_grad=True)
 
 
     @torch.compile
@@ -69,16 +74,18 @@ class Model(nn.Module):
             x = l(x, att_mask)
             
         x = self.final_norm(x)
-        x = self.final_project(x)
-        x = self.head(x)
-        x = torch.sigmoid(x)
+        x = self.final_linear(x)
 
-        diag_mask = 1. - torch.diag(
-            torch.ones(x.size(1), dtype=x.dtype, device=x.device)
-        ).unsqueeze(0)
-        x = x * diag_mask
+        x = torch.bmm(x, torch.transpose(x, 1, 2))
+        x = x / self.final_dot_norm
+        x = x + self.final_bias
+        x = x - 1e7 * torch.diag(torch.ones(x.size(1), dtype=x.dtype, device=x.device)).unsqueeze(0)
+
+        nbn, m = x[:, 0], x[:, 1:] # b, seq | b, seq-1, seq
+        nbn = torch.sigmoid(nbn)
+        m = torch.nn.functional.softmax(m, dim=-1)
         
-        return x
+        return nbn, m
 
 
 

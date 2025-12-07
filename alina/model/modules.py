@@ -106,29 +106,3 @@ class EncoderLayer(nn.Module):
         x += ff
 
         return x
-
-
-class PirwiseHead(nn.Module):
-    def __init__(self, dim: int):
-        super().__init__()
-        self.l1 = nn.Linear(4*dim, dim)
-        torch.nn.init.kaiming_uniform_(self.l1.weight, nonlinearity='relu')
-
-        self.l2 = nn.Linear(dim, 1)
-        torch.nn.init.xavier_uniform_(self.l2.weight, gain=1.0)
-
-
-    def forward(self, x: torch.Tensor):
-        batch, seq, dim = x.shape
-        a = x.unsqueeze(1).expand(batch, seq, seq, dim)
-        b = x.unsqueeze(2).expand(batch, seq, seq, dim)
-        x = torch.cat([
-            a, b, a*b, torch.abs(a-b)
-        ], dim=-1)
-
-        x = self.l1(x)
-        x = torch.nn.functional.silu(x)
-        x = self.l2(x) # -> b, seq, seq, 1
-
-        x = x.unsqueeze(-1)
-        return x

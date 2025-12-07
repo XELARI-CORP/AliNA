@@ -35,7 +35,7 @@ class AlinaBatch:
     
 
 class AlinaDataset:
-    NT_MAP = {"A":1, "U":2, "G":3, "C":4}
+    NT_MAP = {"No_Bond": 1, "A":2, "U":3, "G":4, "C":5}
 
     def __init__(self, nas: List[nsk.NucleicAcid]):
         
@@ -53,9 +53,18 @@ class AlinaDataset:
             return x
         
         na: nsk.NucleicAcid = self.nas[n]
-        seq = torch.IntTensor([self.NT_MAP[nt] for nt in na.seq])
-        adj = torch.FloatTensor(na.get_adjacency())
-        dp: AlinaDataPoint = AlinaDataPoint(seq=seq, adj=adj, len=len(na))
+        seq = torch.IntTensor([1] + [self.NT_MAP[nt] for nt in na.seq])
+        
+        adj = torch.zeros((len(na)+1, len(na)+1), dtype=torch.float32)
+        for i in range(len(na)):
+            b: int | None = na.complnb(i)
+            if b is None:
+                adj[i+1][0] = 1
+                adj[0][i+1] = 1
+            else:
+                adj[i+1][b+1] = 1
+
+        dp: AlinaDataPoint = AlinaDataPoint(seq=seq, adj=adj, len=len(na)+1)
         self.X[n] = dp
         
         return dp
@@ -94,6 +103,8 @@ def collate_fn(dps: List[AlinaDataPoint]) -> AlinaBatch:
         n = len(dp)
         X[i, :n] = dp.seq
         Y[i, :n, :n] = dp.adj
+        Y[i, n:, 0] = 1.
+        Y[i, 0, n:] = 1.
         lens.append(dp.len)
     
     return AlinaBatch(
