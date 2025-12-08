@@ -44,7 +44,7 @@ class Model(nn.Module):
         self.final_norm = norm_layer(dim)
         self.DotW = torch.nn.Parameter(torch.rand((dim, dim)), requires_grad=True)
         torch.nn.init.xavier_uniform_(self.DotW, gain=1.0)
-        self.final_bias = torch.nn.Parameter(torch.tensor(0.), requires_grad=True)
+        self.final_bias = torch.nn.Parameter(torch.tensor(-3.0), requires_grad=True)
 
 
     @torch.compile
