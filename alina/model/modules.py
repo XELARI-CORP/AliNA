@@ -39,8 +39,8 @@ class MHAttention(nn.Module):
         #att
         g = torch.matmul(q, k)
         g /= self.norm
-        g -= (mask*1e7)
-        A = torch.nn.functional.softmax(g, dim=-1)
+        A = g - mask*1e7
+        A = torch.nn.functional.softmax(A, dim=-1)
 
         att = torch.matmul(A, v) # b,h,s,d
 
@@ -48,7 +48,7 @@ class MHAttention(nn.Module):
         att = att.reshape(batch, seq, self.dim)
         att = self.O(att)
         
-        return att
+        return att, g
     
     
 class FFSwiglu(nn.Module):
@@ -97,7 +97,7 @@ class EncoderLayer(nn.Module):
     def forward(self, x, mask):
 
         att = self.norm1(x)
-        att = self.Att(att, att, att, mask)
+        att, scores = self.Att(att, att, att, mask)
         att = self.drop(att)
         x += att
 
@@ -105,4 +105,4 @@ class EncoderLayer(nn.Module):
         ff = self.FF(ff)
         x += ff
 
-        return x
+        return x, scores

@@ -70,7 +70,7 @@ class Model(nn.Module):
 
         att_mask = (seq==0).to(x.dtype).view(seq.size(0), 1, 1, seq.size(1)) # b, seq -> b, 1, 1, seq
         for l in self.encoders_list:
-            x = l(x, att_mask)
+            x, scores = l(x, att_mask)
             
         x = self.final_norm(x)
         x = torch.matmul(
