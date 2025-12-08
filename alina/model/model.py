@@ -42,9 +42,8 @@ class Model(nn.Module):
             self.encoders_list.append(EncoderLayer(dim=dim, heads=heads, do=0.1, norm_layer=norm_layer))
 
         self.final_norm = norm_layer(dim)
-        self.final_linear = nn.Linear(dim, dim)
-        torch.nn.init.xavier_uniform_(self.final_linear.weight, gain=1.0)
-        torch.nn.init.zeros_(self.final_linear.bias)
+        self.DotW = torch.nn.Parameter(torch.rand((dim, dim)), requires_grad=True)
+        torch.nn.init.xavier_uniform_(self.DotW, gain=1.0)
         self.final_bias = torch.nn.Parameter(torch.tensor(0.), requires_grad=True)
 
 
@@ -74,9 +73,10 @@ class Model(nn.Module):
             x = l(x, att_mask)
             
         x = self.final_norm(x)
-        x = self.final_linear(x)
-
-        x = torch.bmm(x, torch.transpose(x, 1, 2))
+        x = torch.matmul(
+            torch.matmul(x, self.DotW), # -> b, seq, dim
+            torch.transpose(x, 1, 2) # @ b, dim, seq -> b, seq, seq
+        )
         x = x / self.final_dot_norm
         x = x + self.final_bias
         x = x - 1e7 * torch.diag(torch.ones(x.size(1), dtype=x.dtype, device=x.device)).unsqueeze(0)
