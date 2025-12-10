@@ -81,7 +81,7 @@ alina [-h] [-m {seq,file}] -i <Sequence or Fasta file> [-o <Output file>] [-th <
 ```
 import alina
 
-Alina = alina.AliNA.load(model="pretrained_augmented")
+Alina = alina.AliNA.load(model="ngs_mfe_augmented")
 Alina = Alina.to("cuda")
                 
 struct = Alina.fold('UAGCGUAGGGGAAACGCCCGGUUACAUU')
