@@ -3,7 +3,7 @@ import math
 import torch
 import torch.nn as nn
 
-from .modules import EncoderLayer
+from .modules import ComplementaryLayer, EncoderLayer
 
 
 class Model(nn.Module):
@@ -36,6 +36,9 @@ class Model(nn.Module):
             else:
                 torch.nn.init.xavier_uniform_(layer.weight, gain=1.0)
                 self.conv_model.append(layer)
+
+        # Secondary structure
+        self.complementary_layer = ComplementaryLayer(dim)
         
         # Transformer
         if isinstance(encoders_order, int):
@@ -69,7 +72,7 @@ class Model(nn.Module):
         return pos_enc
         
             
-    def forward(self, seq): 
+    def forward(self, seq: torch.Tensor, struct_vec: torch.Tensor): 
         
         x = self.embedding(seq) # b, seq, dim
         x = torch.transpose(x, 1, 2) # -> b, dim, seq
@@ -77,6 +80,7 @@ class Model(nn.Module):
         x = torch.transpose(x, 1, 2) # -> b, seq, dims
 
         x += self.pos_enc(x.size(1), x.size(2)).to(x.dtype).to(x.device)
+        x = self.complementary_layer(x, struct_vec)
 
         att_mask = (seq==0).to(x.dtype).view(seq.size(0), 1, 1, seq.size(1)) # b, seq -> b, 1, 1, seq
         for li in self.encoders_order:

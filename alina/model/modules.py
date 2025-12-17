@@ -4,6 +4,46 @@ import torch.nn as nn
 
 
         
+class ComplementaryLayer(nn.Module):
+    def __init__(self, dim: int):
+        super().__init__()
+        
+        self.l1 = nn.Linear(dim+2, dim)
+        torch.nn.init.kaiming_uniform_(self.l1.weight, nonlinearity='relu')
+        torch.nn.init.zeros_(self.l1.bias)
+
+        self.l2 = nn.Linear(dim, dim)
+        torch.nn.init.xavier_uniform_(self.l2.weight, gain=1.0)
+        torch.nn.init.zeros_(self.l2.bias)
+        
+        self.drop = torch.nn.Dropout(0.1)
+
+
+    def take_compl_embeds(self, x: torch.Tensor, struct_vec: torch.Tensor) -> torch.Tensor:
+        batch, seq, dim = x.shape
+        
+        idx = torch.where(struct_vec!=0, struct_vec, torch.arange(seq, device=x.device))
+        idx = idx + seq*torch.arange(batch, dtype=torch.int32, device=idx.device).unsqueeze(1)
+        assert idx.size(0) == batch and idx.size(1) == seq
+
+        return x.view(batch*seq, dim)[idx]
+
+
+    def forward(self, x: torch.Tensor, struct_vec: torch.Tensor):
+        free_nts = (struct_vec==0).to(x.dtype) # b, seq
+        compl_nts = 1.0 - free_nts
+
+        x = torch.cat([x, free_nts.unsqueeze(2), compl_nts.unsqueeze(2)], dim=-1) # b, seq, dim+2
+        x = self.l1(x)
+        compl_x = self.take_compl_embeds(x, struct_vec)
+        x = x + compl_x
+        x = torch.nn.functional.silu(x)
+        x = self.drop(x)
+        x = self.l2(x)
+
+        return x
+
+
 class MHAttention(nn.Module):
     def __init__(self, dim: int, heads: int):
         super().__init__()
@@ -20,7 +60,7 @@ class MHAttention(nn.Module):
 
         for l in [self.Q, self.K, self.V, self.O]:
             torch.nn.init.xavier_uniform_(l.weight, gain=1.0)
-            torch.nn.init.zeros_(l.bias)    
+            torch.nn.init.zeros_(l.bias)
 
         
     def forward(self, q, k, v, mask):

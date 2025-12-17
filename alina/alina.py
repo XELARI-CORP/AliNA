@@ -115,10 +115,10 @@ class AliNA(Model):
             data = [data]
 
         data = self._prepare_data(data)
-        dataset = AlinaDataset(data, with_adjacency=False)
+        dataset = AlinaDataset(data)
         loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size,
                                              shuffle=False, drop_last=False,
-                                             collate_fn=make_collate(256, center_pad = self.center_pad))
+                                             collate_fn=collate_fn)
             
         preds, ls, sls = [], [], []
         self.eval()
@@ -168,10 +168,15 @@ class AliNA(Model):
         return x
         
         
-    def sanity_check(self, batch: int = 2, seq: int = 32):
-        x = torch.ones(batch, seq, dtype=torch.int32, device=self.device)
+    def sanity_check(self):
+        nas = [
+            nsk.NA("AUAUAU", "(....)"),
+            nsk.NA("AGCGCGUU", "(..[..)]")
+        ]
+        ds = AlinaDataset(nas)
+        batch = collate_fn([ds[0], ds[1]]).to(self.device)
         with torch.no_grad():
-            return self(x)
+            return self(batch.seq, batch.inp_struct)
         
         
         
