@@ -71,12 +71,14 @@ class AlinaDataset:
 
     def __init__(self,
                  nas: List[nsk.NucleicAcid],
-                 input_preprocessor: Callable[[nsk.NucleicAcid], torch.Tensor] = BaseInputPreprocessor()
+                 input_preprocessor: Callable[[nsk.NucleicAcid], torch.Tensor] = BaseInputPreprocessor(),
+                 cache: bool = True
                  ):
         
         self.nas = nas
-        self.X: List[AlinaDataPoint | None] = [None]*len(nas)
         self.input_preprocessor = input_preprocessor
+        self.cache = cache
+        self.X: List[AlinaDataPoint | None] = [None]*len(nas)
 
     
     def __len__(self):
@@ -101,7 +103,8 @@ class AlinaDataset:
                                             inp_struct=inp_struct,
                                             out_struct=out_struct,
                                             len=len(na)+1)
-        self.X[n] = dp.compress()
+        if self.cache:
+            self.X[n] = dp.compress()
         
         return dp
 
