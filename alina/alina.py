@@ -44,8 +44,13 @@ class AliNA(Model):
 
     @property
     def state(self):
+        if hasattr(self, "_orig_mod"):
+            state_dict = self._orig_mod.state_dict()
+        else:
+            state_dict = self.state_dict()
+
         return {
-            "model_state_dict":self.state_dict(),
+            "model_state_dict":state_dict,
             "model_params":self.__model_params,
         }
 
@@ -74,12 +79,8 @@ class AliNA(Model):
             else:
                 raise ValueError(f"Unknown model name {model}. Choose from: ['pretrained_augmented', 'ngs_mfe_augmented']")
         
-        state = torch.load(path, map_location='cpu', weights_only=True)
-        model = cls(
-            model_parameters = state["model_params"],
-            dimer_embeddings = state["dimer_embeddings"],
-            center_pad = state["center_pad"]
-        )
+        state = torch.load(path, map_location='cpu', weights_only=False)
+        model = cls(model_parameters = state["model_params"])
         model.load_state_dict(state["model_state_dict"])
         return model
 

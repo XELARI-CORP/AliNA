@@ -94,10 +94,10 @@ class AlinaDataset:
         seq = torch.IntTensor([1] + [self.NT_MAP[nt] for nt in na.seq])
         
         inp_struct = self.input_preprocessor(na)
-        out_struct = torch.zeros(seq.size(0), dtype=torch.int32)
+        out_struct = torch.zeros(len(na), dtype=torch.int32)
         for i, j in na.pairs:
-            out_struct[i+1] = j+1
-            out_struct[j+1] = i+1
+            out_struct[i] = j
+            out_struct[j] = i
         
         dp: AlinaDataPoint = AlinaDataPoint(seq=seq,
                                             inp_struct=inp_struct,
@@ -136,14 +136,14 @@ def collate_fn(dps: List[AlinaDataPoint]) -> AlinaBatch:
     
     seq = torch.zeros((N, maxl), dtype=torch.int32)
     inp_struct = torch.zeros((N, maxl), dtype=torch.int32)
-    out_struct = torch.zeros((N, maxl), dtype=torch.int32)
+    out_struct = torch.zeros((N, maxl-1), dtype=torch.int32)
     lens = []
     
     for i, dp in enumerate(dps):
         n = len(dp)
         seq[i, :n] = dp.seq
         inp_struct[i, :n] = dp.inp_struct
-        out_struct[i, :n] = dp.out_struct
+        out_struct[i, :n-1] = dp.out_struct
         lens.append(dp.len)
     
     return AlinaBatch(
