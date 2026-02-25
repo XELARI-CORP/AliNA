@@ -7,6 +7,7 @@ import numpy as np
 from .dictionary import mono_pair_dict, dimer_pair_dict
 from typing import Iterable
 
+# используется для проверки сиквенсов в msa
 class SequenceError(ValueError):
     pass
 
@@ -212,7 +213,7 @@ class MSAClassifierDataset:
                 M[p][n] = mono_pair_dict[fx+fy]
         return M
 
-    def seq2tensor(self, na):
+    def get_msa_adj_tensors(self, na):
 
         msa = [self.seq2matrix_func(seq).to(self.cache_dtype) for seq in na.meta['msa']]
         X = torch.zeros((len(msa), self.max_len, self.max_len), dtype=torch.int32)
@@ -236,7 +237,7 @@ class MSAClassifierDataset:
         Y = torch.zeros((self.max_len, self.max_len), dtype=torch.float32)
         Y[left:until, left:until] = y
         
-        return X, Y
+        return X, Y, left, until
         
     def augment_ss(self,
                    na,
@@ -274,11 +275,11 @@ class MSAClassifierDataset:
         
         na = self.data[key]
         
-        X, adj = self.seq2tensor(na)
+        X, adj, L, Sl = self.get_msa_adj_tensors(na)
 
         y = na.get_adjacency() if (na.struct is not None) else None
         
-        return X, adj, y
+        return X, adj, L, Sl, y
 
     def make_msa_sample(self, X):
 
@@ -303,10 +304,10 @@ class MSAClassifierDataset:
         if self._cache:
             self.data[key] = batch
 
-        X, adj, y = batch
+        X, adj, L, Sl, y = batch
         X = self.make_msa_sample(X) # sample msa
         
-        return X, adj, y
+        return X, adj, L, Sl, y
 
     def precache(self):
         for i in tqdm.tqdm(range(len(self))):
@@ -333,7 +334,7 @@ class MSAClassifierDataset:
 
         ds = cls(**data)
         return ds
-        
+
 def check_seq(seq, max_len, i, j):
     rn = set(seq) - {'A', 'U', 'G', 'C', 'N'}
     if len(rn)!=0:
