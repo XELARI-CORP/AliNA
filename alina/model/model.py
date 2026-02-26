@@ -4,8 +4,12 @@ from torch.nn import functional as F
 
 from .modules import pos_enc, ConvLayerNorm, ConvBlock, MHAttention, EncoderLayer
 
-
+#  заглушка, чтобы не чинить импорты во всех файлах
 class Model(nn.Module):
+    def __init__():
+        super().__init__()
+
+class MSABody(nn.Module):
     def __init__(self, 
                  vocab: int, 
                  emb: int, 
@@ -40,12 +44,6 @@ class Model(nn.Module):
         self.DecCVBlock1 = ConvBlock((dim+channels[3]), channels[-1], convdrop)
         self.DecCVBlock2 = ConvBlock(channels[-2]+channels[-1], channels[-2], convdrop)
         self.DecCVBlock3 = ConvBlock(channels[-3]+channels[-2], channels[-3], convdrop)
-        self.DecCVBlock4 = ConvBlock(channels[-4]+channels[-3], channels[-4], convdrop)
-        
-        # OUT    
-        self.out = nn.Conv2d(channels[-4], 1, kernel_size=(1,1), stride=1, padding='valid')
-        torch.nn.init.xavier_uniform_(self.out.weight, gain=1.0)
-        
         
     def get_pad_mask(self, x):
         x = x.view(-1, 16, 16, 256)
@@ -104,16 +102,71 @@ class Model(nn.Module):
 
         x = self.upsample(x) # b, 64, 128, 128 -> b, 64, 256, 256
         x = torch.cat((x, x1), 1) # b, 64, 256, 256 + b, 32, 256, 256 -> b, 96, 256, 256
-        x = self.DecCVBlock4(x) # b, 96, 256, 256 -> b, 32, 256, 256
-        
-        # HEAD
-        x = self.out(x)
-        x = x.squeeze(1) # b, 32, 256, 256 -> b, 256, 256
-        x = torch.sigmoid(x)
         
         return x
 
+class MSAClassifier(nn.Module):
+    def __init__(self,
+                 body_parameters: dict,
+                 head_dim: int = 128):
+        super().__init__()
+        self.body = MSABody(**body_parameters)
+        self.head_dim = head_dim
 
+        mlp_input_dim = body_parameters['channels'][-3] + body_parameters['channels'][0] 
+        self.mlp = nn.Sequential(
+            nn.Linear(mlp_input_dim, self.head_dim),
+            nn.SiLU(),
+            nn.Dropout(0.1),
+            nn.Linear(self.head_dim, self.head_dim),
+            nn.SiLU(),
+            nn.Dropout(0.1),
+            nn.Linear(self.head_dim, self.head_dim)
+        )
+        torch.nn.init.kaiming_uniform_(self.mlp[0].weight, nonlinearity='relu')
+        torch.nn.init.kaiming_uniform_(self.mlp[3].weight, nonlinearity='relu')
+        torch.nn.init.xavier_uniform_( self.mlp[6].weight, gain=1.0)
+
+        torch.nn.init.zeros_(self.mlp[0].bias)
+        torch.nn.init.zeros_(self.mlp[3].bias)
+        torch.nn.init.zeros_(self.mlp[6].bias)
+
+        self.head = nn.Sequential(
+            nn.Linear(self.head_dim+1, 2*self.head_dim),
+            nn.SiLU(),
+            nn.Dropout(0.1),
+            nn.Linear(2*self.head_dim, 2*self.head_dim),
+            nn.SiLU(),
+            nn.Dropout(0.1),
+            nn.Linear(2*self.head_dim, 1)
+        )
+        torch.nn.init.kaiming_uniform_(self.head[0].weight, nonlinearity='relu')
+        torch.nn.init.kaiming_uniform_(self.head[3].weight, nonlinearity='relu')
+        torch.nn.init.xavier_uniform_( self.head[6].weight, gain=1.0)
+
+        torch.nn.init.zeros_(self.head[0].bias)
+        torch.nn.init.zeros_(self.head[3].bias)
+        torch.nn.init.zeros_(self.head[6].bias)
+        
+    def forward(self, msa, adj): # MSA, RNA 2d adj. matrix
+
+        msa = self.body(msa) # b, dim, H, W
+        msa = torch.permute(msa, (0, 2, 3, 1)).contiguous() # b, H, W, dim
+        msa = self.mlp(msa) # b, H, W, head_dim
+
+        msa = msa.sum(axis=0).squeeze() # H, W, head_dim
+
+        adj = adj.unsqueeze(-1).to(msa.dtype) # H, W, 1
+        x = torch.cat((msa, adj), dim=-1) # H, W, head_dim + 1
+
+        x = self.head(x).squeeze(-1) # H, W
+        x = torch.sigmoid(x)
+
+        return x
+        
+        
+        
+        
 
 
 
