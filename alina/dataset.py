@@ -149,15 +149,16 @@ class MSAClassifierDataset:
                 ):
             
         self.data = data
-        for i, na in enumerate(data):
-            for j, seq in enumerate(na.meta['msa']):
-                check_seq(seq, max_len, i, j)
-            
-        self.msa_sample = msa_sample
-
         self.augment_struct = augment_struct
-        if not self.augment_struct:
-            assert all(["coev_struct" in dp.meta.keys() for dp in data]), "if augment_struct==False, meta must contain 'coev_struct' field"
+        is_already_cached = isinstance(data[0], tuple)
+        if not is_already_cached:
+            for i, na in enumerate(data):
+                for j, seq in enumerate(na.meta['msa']):
+                    check_seq(seq, max_len, i, j)
+                    
+            if not self.augment_struct:
+                assert all(["coev_struct" in dp.meta.keys() for dp in data]), "if augment_struct==False, meta must contain 'coev_struct' field"
+        self.msa_sample = msa_sample
         
         self.ss_augment_range = ss_augment_range
         self.augment_helix_len_range = augment_helix_len_range
@@ -227,17 +228,17 @@ class MSAClassifierDataset:
 
         if self.augment_struct:
             ss = self.augment_ss(na)
-            y = nsk.NA(ss).get_adjacency()
+            adj = nsk.NA(ss).get_adjacency()
         else:
-            y = nsk.NA(na.meta['coev_struct']).get_adjacency()
+            adj = nsk.NA(na.meta['coev_struct']).get_adjacency()
             
-        y = torch.FloatTensor(y)
-        m = y.shape[0]
+        adj = torch.FloatTensor(adj)
+        m = adj.shape[0]
         assert m==n, "length of a sequence in MSA must be equal to SS size"
-        Y = torch.zeros((self.max_len, self.max_len), dtype=torch.float32)
-        Y[left:until, left:until] = y
+        A = torch.zeros((self.max_len, self.max_len), dtype=torch.float32)
+        A[left:until, left:until] = adj
         
-        return X, Y, left, until
+        return X, A, left, until
         
     def augment_ss(self,
                    na,
@@ -277,9 +278,14 @@ class MSAClassifierDataset:
         
         X, adj, L, Sl = self.get_msa_adj_tensors(na)
 
-        y = na.get_adjacency() if (na.struct is not None) else None
+        if na.struct is not None:
+            y =  torch.FloatTensor(na.get_adjacency())
+            Y = torch.zeros((self.max_len, self.max_len), dtype=torch.float32)
+            Y[L:Sl, L:Sl] = y
+        else:
+            Y = None
         
-        return X, adj, L, Sl, y
+        return X, adj, L, Sl, Y
 
     def make_msa_sample(self, X):
 
