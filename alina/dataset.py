@@ -137,7 +137,7 @@ class MSAClassifierDataset:
     def __init__(self, 
                  data: Iterable[nsk.NucleicAcid],
                  augment_struct: bool,
-                 msa_sample: float = 1.,
+                 msa_sample_size: float = 1.,
                  ss_augment_range: tuple[float, float] = (0.2, 0.4),
                  augment_helix_len_range: tuple[int, int] = (2,4),
                  
@@ -150,15 +150,28 @@ class MSAClassifierDataset:
             
         self.data = data
         self.augment_struct = augment_struct
-        is_already_cached = isinstance(data[0], tuple)
-        if not is_already_cached:
-            for i, na in enumerate(data):
-                for j, seq in enumerate(na.meta['msa']):
-                    check_seq(seq, max_len, i, j)
-                    
+        
+        # check up
+        for i, na in enumerate(data):
+            is_cached = isinstance(na.meta['msa'], torch.Tensor)
+            if is_cached:
+                continue
+
+            ls = []
+            for j, seq in enumerate(na.meta['msa']):
+                check_seq(seq, max_len, i, j)
+                ls.append(len(seq))
+                
             if not self.augment_struct:
-                assert all(["coev_struct" in dp.meta.keys() for dp in data]), "if augment_struct==False, meta must contain 'coev_struct' field"
-        self.msa_sample = msa_sample
+                assert "coev_struct" in na.meta.keys(), f"dp #{i}: augment_struct==False, but meta doesn't contain 'coev_struct' field"
+                ls.append(len(na.meta['coev_struct']))
+            
+            ls.append(len(na.struct))
+            assert len(set(ls)) == 1, f"dp #{i}, here are seq/ss with different length"
+
+            self.data[i].meta['cached'] = False
+                
+        self.msa_sample_size = msa_sample_size
         
         self.ss_augment_range = ss_augment_range
         self.augment_helix_len_range = augment_helix_len_range
@@ -214,7 +227,7 @@ class MSAClassifierDataset:
                 M[p][n] = mono_pair_dict[fx+fy]
         return M
 
-    def get_msa_adj_tensors(self, na):
+    def get_msa_tensor(self, na):
 
         msa = [self.seq2matrix_func(seq).to(self.cache_dtype) for seq in na.meta['msa']]
         X = torch.zeros((len(msa), self.max_len, self.max_len), dtype=torch.int32)
@@ -226,19 +239,26 @@ class MSAClassifierDataset:
         for i, x in enumerate(msa):
             X[i, left:until, left:until] = x
 
+        return X, left, until
+
+    def get_adj_tensor(self, na):
+
+        L, Sl = na.meta['offset']
+        
         if self.augment_struct:
+            #print(na)
             ss = self.augment_ss(na)
             adj = nsk.NA(ss).get_adjacency()
         else:
             adj = nsk.NA(na.meta['coev_struct']).get_adjacency()
             
         adj = torch.FloatTensor(adj)
-        m = adj.shape[0]
-        assert m==n, "length of a sequence in MSA must be equal to SS size"
-        A = torch.zeros((self.max_len, self.max_len), dtype=torch.float32)
-        A[left:until, left:until] = adj
         
-        return X, A, left, until
+        A = torch.zeros((self.max_len, self.max_len), dtype=torch.float32)
+        A[L:Sl, L:Sl] = adj
+        
+        return A
+        
         
     def augment_ss(self,
                    na,
@@ -248,6 +268,7 @@ class MSAClassifierDataset:
         n_pairs = len(na.pairs)
         
         freq = self._rng.uniform(*self.ss_augment_range)
+        seed = int(self._rng.integers(1e6))
     
         n_add_pairs = int(np.floor(n_pairs*freq))
         n_add_pairs = max(1, n_add_pairs)
@@ -255,12 +276,13 @@ class MSAClassifierDataset:
         n_pairs = min(n_max_pairs, n_pairs + n_add_pairs)
         
         max_compl_ratio = 2*n_pairs/len(na)
-        
+
+        true_struct = na.struct
         na = nsk.algo.generate_ss(na,
                                   min_helix_size=self.augment_helix_len_range[0],
                                   max_helix_size=self.augment_helix_len_range[0],
                                   max_compl_ratio=max_compl_ratio,
-                                  patience=patience)
+                                  patience=patience, seed = seed)
         
         compl_ratio = 2*len(na.pairs)/len(na)
         if(compl_ratio<max_compl_ratio):
@@ -268,29 +290,38 @@ class MSAClassifierDataset:
                                       min_helix_size=1,
                                       max_helix_size=1,
                                       max_compl_ratio=max_compl_ratio,
-                                      patience=patience)
+                                      patience=patience, seed = seed)
+
+        aug_struct = na.struct
+        na.struct = true_struct
+        
+        return aug_struct
+
+    def prepare_dp(self, key):
+        
+        dp = self.data[key]
+        
+        if not dp.meta['cached']:
+            X, L, Sl = self.get_msa_tensor(dp)
+            dp.meta['msa'] = X
+            dp.meta['offset'] = (L, Sl)
             
-        return na.struct
-
-    def make_batch(self, key):
-        
-        na = self.data[key]
-        
-        X, adj, L, Sl = self.get_msa_adj_tensors(na)
-
-        if na.struct is not None:
-            y =  torch.FloatTensor(na.get_adjacency())
-            Y = torch.zeros((self.max_len, self.max_len), dtype=torch.float32)
-            Y[L:Sl, L:Sl] = y
-        else:
-            Y = None
-        
-        return X, adj, L, Sl, Y
+            if dp.struct is not None:
+                y =  torch.FloatTensor(dp.get_adjacency())
+                Y = torch.zeros((self.max_len, self.max_len), dtype=torch.float32)
+                Y[L:Sl, L:Sl] = y
+                dp.meta['true_struct'] = Y
+            else:
+                dp.meta['true_struct'] = None
+                
+            dp.meta['cached'] = True
+               
+        return dp
 
     def make_msa_sample(self, X):
 
         n = X.shape[0]
-        k = int(math.ceil(n*self.msa_sample))
+        k = int(math.ceil(n*self.msa_sample_size))
         assert k<=n
 
         inds = self._rng.choice(n, size=k, replace=False)
@@ -301,18 +332,24 @@ class MSAClassifierDataset:
         return X
         
     def __getitem__(self, key: int):
-        if self._cache:
-            if isinstance(self.data[key], tuple):
-                batch = self.data[key]
-            else:
-                batch = self.make_batch(key)
 
-        if self._cache:
-            self.data[key] = batch
-
-        X, adj, L, Sl, y = batch
+        is_cached = self.data[key].meta['cached']
+        if is_cached:
+            dp = self.data[key]
+        else:
+            dp = self.prepare_dp(key)
+            if self._cache:
+                self.data[key] = dp
+                
+        X = dp.meta['msa']
         X = self.make_msa_sample(X) # sample msa
         
+        adj = self.get_adj_tensor(dp)
+        
+        L, Sl = dp.meta['offset']
+
+        y = dp.meta['true_struct']
+    
         return X, adj, L, Sl, y
 
     def precache(self):
@@ -324,7 +361,7 @@ class MSAClassifierDataset:
         with open(path, 'wb') as f:
             pickle.dump({"data":self.data,
                          "augment_struct":self.augment_struct,
-                         "msa_sample":self.msa_sample,
+                         "msa_sample_size":self.msa_sample_size,
                          "ss_augment_range":self.ss_augment_range,
                          "augment_helix_len_range":self.augment_helix_len_range,
                          "cache":self._cache,
