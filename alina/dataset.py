@@ -1,9 +1,12 @@
+
 import pickle
 import tqdm
 import torch
 import naskit as nsk
 import math
+import random
 import numpy as np
+from dataclasses import dataclass
 from .dictionary import mono_pair_dict, dimer_pair_dict
 from typing import Iterable
 
@@ -132,45 +135,69 @@ def make_collate(max_len: int, center_pad: bool):
     
     return collate_fn
 
+@dataclass
+class ComplexData:
+    msa:           torch.Tensor
+    true_adj:      torch.Tensor
+    best_coev_adj: torch.Tensor
+    coev_adjs:     torch.Tensor
+    offset:        tuple
+    
+
 ####  MSAClassifier ####
 class MSAClassifierDataset:
     def __init__(self, 
                  data: Iterable[nsk.NucleicAcid],
-                 augment_struct: bool,
-                 msa_sample: float = 1.,
+                 mode: str,
+                 msa_sample_size: float = 1.,
                  ss_augment_range: tuple[float, float] = (0.2, 0.4),
                  augment_helix_len_range: tuple[int, int] = (2,4),
                  
-                 cache: bool = True,
                  dimer_embeddings: bool = False,
                  center_pad: bool = False,
-                 max_len: int = 256,
-                 seed: int = 42
-                ):
-            
-        self.data = data
-        for i, na in enumerate(data):
-            for j, seq in enumerate(na.meta['msa']):
-                check_seq(seq, max_len, i, j)
-            
-        self.msa_sample = msa_sample
+                 max_len: int = 256):
 
-        self.augment_struct = augment_struct
-        if not self.augment_struct:
-            assert all(["coev_struct" in dp.meta.keys() for dp in data]), "if augment_struct==False, meta must contain 'coev_struct' field"
+        assert (mode in ['augment', 'train', 'valid']), f"unknown 'mode' value, expected: 'augment', 'train', 'valid'"
+        self.data = data
+        #self.augment_struct = augment_struct
+
+        is_cached = isinstance(data[0], ComplexData)
+        if is_cached:
+            self._cache = True
+        else:
+            self._cache = False
+            # check up
+            for i, na in enumerate(data):
+                ls = []
+                assert "msa" in na.meta.keys(), f"dp #{i}: meta must contain 'msa' field"
+                for j, seq in enumerate(na.meta['msa']):
+                    check_seq(seq, max_len, i, j)
+                    ls.append(len(seq))
+                    
+                if mode=='valid':
+                    assert "coev_struct" in na.meta.keys(), f"dp #{i}: 'valid' mode, but meta doesn't contain 'coev_struct' field"
+                    ls.append(len(na.meta['coev_struct']))
+                if mode=='train':
+                    assert "coev_dbns" in na.meta.keys(), f"dp #{i}: 'train' mode, but meta doesn't contain 'coev_dbns' field"
+                    ls = ls + [len(dbn) for dbn in na.meta['coev_dbns']]
+                    
+                ls.append(len(na.struct))
+                assert len(set(ls)) == 1, f"dp #{i}, here are seq/ss(s) with different lengths"
+
+        self.mode = mode
+        self.msa_sample_size = msa_sample_size
         
         self.ss_augment_range = ss_augment_range
         self.augment_helix_len_range = augment_helix_len_range
 
-        self._cache = cache
         self.dimer_embeddings = dimer_embeddings
         self.center_pad = center_pad
         self.max_len = max_len
-        self.seed = seed
-        self._rng = np.random.default_rng(seed)
 
         self.seq2matrix_func = self.dimer_seq2matrix if self.dimer_embeddings else self.mono_seq2matrix
         self.cache_dtype = torch.uint16 if self.dimer_embeddings else torch.uint8
+
+        self.dp_adjs_inds = torch.zeros(len(data), dtype=torch.int32)
     
     
     def __len__(self):
@@ -213,9 +240,9 @@ class MSAClassifierDataset:
                 M[p][n] = mono_pair_dict[fx+fy]
         return M
 
-    def get_msa_adj_tensors(self, na):
+    def get_msa_tensor(self, msa_list: Iterable[str]):
 
-        msa = [self.seq2matrix_func(seq).to(self.cache_dtype) for seq in na.meta['msa']]
+        msa = [self.seq2matrix_func(seq).to(self.cache_dtype) for seq in msa_list]
         X = torch.zeros((len(msa), self.max_len, self.max_len), dtype=torch.int32)
         
         n = msa[0].shape[0]
@@ -225,107 +252,151 @@ class MSAClassifierDataset:
         for i, x in enumerate(msa):
             X[i, left:until, left:until] = x
 
-        if self.augment_struct:
-            ss = self.augment_ss(na)
-            y = nsk.NA(ss).get_adjacency()
-        else:
-            y = nsk.NA(na.meta['coev_struct']).get_adjacency()
+        return X, left, until
+
+    def get_coev_adjs_tensor(self, coev_dbns, coev_struct, L, Sl):
+
+        coev_adjs_list = []
+        for dbn in coev_dbns:
+            if dbn == coev_struct:
+                continue
+            coev_adjs_list.append( torch.FloatTensor(nsk.NA(dbn).get_adjacency()) )
             
-        y = torch.FloatTensor(y)
-        m = y.shape[0]
-        assert m==n, "length of a sequence in MSA must be equal to SS size"
-        Y = torch.zeros((self.max_len, self.max_len), dtype=torch.float32)
-        Y[left:until, left:until] = y
-        
-        return X, Y, left, until
-        
-    def augment_ss(self,
-                   na,
-                   patience = 5):
-        
-        n_max_pairs = len(na) // 2
-        n_pairs = len(na.pairs)
-        
-        freq = self._rng.uniform(*self.ss_augment_range)
-    
-        n_add_pairs = int(np.floor(n_pairs*freq))
-        n_add_pairs = max(1, n_add_pairs)
-    
-        n_pairs = min(n_max_pairs, n_pairs + n_add_pairs)
-        
-        max_compl_ratio = 2*n_pairs/len(na)
-        
-        na = nsk.algo.generate_ss(na,
-                                  min_helix_size=self.augment_helix_len_range[0],
-                                  max_helix_size=self.augment_helix_len_range[0],
-                                  max_compl_ratio=max_compl_ratio,
-                                  patience=patience)
-        
-        compl_ratio = 2*len(na.pairs)/len(na)
-        if(compl_ratio<max_compl_ratio):
-            na = nsk.algo.generate_ss(na,
-                                      min_helix_size=1,
-                                      max_helix_size=1,
-                                      max_compl_ratio=max_compl_ratio,
-                                      patience=patience)
+        coev_adjs_tensor = torch.zeros((len(coev_adjs_list), self.max_len, self.max_len),
+                                       dtype=torch.int32)
+        for i, adj in enumerate(coev_adjs_list):
+            coev_adjs_tensor[i, L:Sl, L:Sl] = adj
             
-        return na.struct
-
-    def make_batch(self, key):
+        return coev_adjs_tensor
         
-        na = self.data[key]
         
-        X, adj, L, Sl = self.get_msa_adj_tensors(na)
-
-        y = na.get_adjacency() if (na.struct is not None) else None
+    # def augment_ss(self,
+    #                na,
+    #                patience = 5):
         
-        return X, adj, L, Sl, y
+    #     n_max_pairs = len(na) // 2
+    #     n_pairs = len(na.pairs)
+        
+    #     freq = self._rng.uniform(*self.ss_augment_range)
+    #     seed = int(self._rng.integers(1e6))
+    
+    #     n_add_pairs = int(np.floor(n_pairs*freq))
+    #     n_add_pairs = max(1, n_add_pairs)
+    
+    #     n_pairs = min(n_max_pairs, n_pairs + n_add_pairs)
+        
+    #     max_compl_ratio = 2*n_pairs/len(na)
 
-    def make_msa_sample(self, X):
+    #     true_struct = na.struct
+    #     na = nsk.algo.generate_ss(na,
+    #                               min_helix_size=self.augment_helix_len_range[0],
+    #                               max_helix_size=self.augment_helix_len_range[0],
+    #                               max_compl_ratio=max_compl_ratio,
+    #                               patience=patience, seed = seed)
+        
+    #     compl_ratio = 2*len(na.pairs)/len(na)
+    #     if(compl_ratio<max_compl_ratio):
+    #         na = nsk.algo.generate_ss(na,
+    #                                   min_helix_size=1,
+    #                                   max_helix_size=1,
+    #                                   max_compl_ratio=max_compl_ratio,
+    #                                   patience=patience, seed = seed)
 
-        n = X.shape[0]
-        k = int(math.ceil(n*self.msa_sample))
+    #     aug_struct = na.struct
+    #     na.struct = true_struct
+        
+    #     return aug_struct
+    
+    def make_msa_sample(self, msa: torch.Tensor):
+
+        n = msa.size(0)
+        k = int(math.ceil(n*self.msa_sample_size))
         assert k<=n
 
-        inds = self._rng.choice(n, size=k, replace=False)
-        inds = torch.as_tensor(inds, device=X.device)
+        inds = torch.randperm(n)[:k]
         
-        X = X[inds,:,:]
+        return msa[inds,:,:]
 
-        return X
+        
+    def increment_data_point_ind(self, key: int):
+        dp = self.data[key]
+        lim = dp.coev_adjs.size(0)
+        
+        curr_ind = self.dp_adjs_inds[key]
+        next_ind = (curr_ind+1) % lim
+        if next_ind==0:
+            adjs = dp.coev_adjs
+            inds = torch.randperm(lim)
+            self.data[key].coev_adjs = adjs[inds]
+            
+        self.dp_adjs_inds[key] = next_ind
+
+    def make_data_point(self, key: int):
+        
+        na = self.data[key]
+
+        msa, L, Sl = self.get_msa_tensor(na.meta['msa'])
+        
+        Y = None
+        if na.struct is not None:
+            Y = torch.zeros((self.max_len, self.max_len), dtype=torch.float32)
+            Y[L:Sl, L:Sl] = torch.FloatTensor(na.get_adjacency())
+            
+        coev_struct_dbn, coev_struct_adj = None, None
+        if 'coev_struct' in na.meta.keys():
+            coev_struct_dbn = na.meta['coev_struct']
+            adj = torch.FloatTensor(nsk.NA(coev_struct_dbn).get_adjacency())
+            coev_struct_adj = torch.zeros((self.max_len, self.max_len), dtype=torch.float32)
+            coev_struct_adj[L:Sl, L:Sl] = adj
+
+        coev_adjs = None
+        if 'coev_dbns' in na.meta.keys():
+            coev_adjs = self.get_coev_adjs_tensor(na.meta['coev_dbns'], coev_struct_dbn, L, Sl)
+
+        return ComplexData(msa, Y, coev_struct_adj, coev_adjs, (L,Sl))
+        
         
     def __getitem__(self, key: int):
-        if self._cache:
-            if isinstance(self.data[key], tuple):
-                batch = self.data[key]
-            else:
-                batch = self.make_batch(key)
 
-        if self._cache:
-            self.data[key] = batch
-
-        X, adj, L, Sl, y = batch
-        X = self.make_msa_sample(X) # sample msa
+        if not isinstance(self.data[key], ComplexData):
+            return self.data[key]
+            
+        dp = self.data[key]
         
-        return X, adj, L, Sl, y
+        y     = dp.true_adj
+        msa   = self.make_msa_sample(dp.msa)
+        L, Sl = dp.offset
+        
+        if self.mode == 'augment':
+            # заглушка
+            adj = torch.zeros((self.max_len, self.max_len), dtype=torch.float32)
+        elif self.mode == 'valid':
+            adj = dp.best_coev_adj
+        elif self.mode == 'train':
+            adj = dp.coev_adjs[self.dp_adjs_inds[key].item()].squeeze()
+            self.increment_data_point_ind(key)
+    
+        return msa, adj, L, Sl, y
 
     def precache(self):
-        for i in tqdm.tqdm(range(len(self))):
-            _ = self[i]
+        if not self._cache:
+            for i in tqdm.tqdm(range(len(self))):
+                self.data[i] = self.make_data_point(i)
+            self._cache = True
+        else:
+            print("Dataset is already cached!")
 
     
     def save(self, path):
         with open(path, 'wb') as f:
             pickle.dump({"data":self.data,
-                         "augment_struct":self.augment_struct,
-                         "msa_sample":self.msa_sample,
+                         "mode":self.mode,
+                         "msa_sample_size":self.msa_sample_size,
                          "ss_augment_range":self.ss_augment_range,
                          "augment_helix_len_range":self.augment_helix_len_range,
-                         "cache":self._cache,
                          "dimer_embeddings":self.dimer_embeddings,
                          "center_pad":self.center_pad,
-                         "max_len":self.max_len,
-                         "seed":self.seed}, f)
+                         "max_len":self.max_len}, f)
 
     @classmethod
     def load(cls, path):
