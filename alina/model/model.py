@@ -1,117 +1,139 @@
+from typing import List
+import math
 import torch
 import torch.nn as nn
-from torch.nn import functional as F
 
-from .modules import pos_enc, ConvLayerNorm, ConvBlock, MHAttention, EncoderLayer
+from .modules import ComplementaryLayer, EncoderLayer, MSATransformer, make_transformer_block
 
 
 class Model(nn.Module):
-    def __init__(self, 
-                 vocab: int, 
-                 emb: int, 
+    def __init__(self,
+                 vocab_size: int,
                  dim: int, 
-                 layers: int, 
-                 heads: int, 
-                 channels: int, 
-                 convdrop: float
+                 seq_len: int,
+                 conv_layers: int,
+                 msa_transformers_order: int | List[int],
+                 encoders_order: int | List[int],
+                 heads: int,
+                 convdrop: float,
+                 conv_activation,
+                 norm_layer
                 ):
         super().__init__()
+        self.dim = dim
+        self.final_dot_norm = math.sqrt(dim) # ???
         
-        self.embedding = nn.Embedding(vocab, emb)
-        
-        # ENCODER
-        self.pool = nn.MaxPool2d(2, stride=2)
-        self.EncCVBlock1 = ConvBlock(emb, channels[0], convdrop)
-        self.EncCVBlock2 = ConvBlock(channels[0], channels[1], convdrop)
-        self.EncCVBlock3 = ConvBlock(channels[1], channels[2], convdrop)
-        self.EncCVBlock4 = ConvBlock(channels[2], channels[3], convdrop)
-        
-        # MIDDLE
-        self.postpool = nn.Linear(channels[3], dim)
-        torch.nn.init.xavier_uniform_(self.postpool.weight, gain=1.0)
-        
-        self.PE = torch.nn.parameter.Parameter(pos_enc(seq=256, dim=dim), requires_grad=False)
-        self.encoders_list = nn.ModuleList()
-        for i in range(layers):
-            self.encoders_list.append(EncoderLayer(dim=dim, heads=heads, do=0.1))
+        # Embedding
+        self.embedding = nn.Embedding(vocab_size, dim)
+        self.nb_token = torch.nn.Parameter(torch.rand(1,1,dim), requires_grad=True) # NoBound token 
 
-        # DECODER
-        self.upsample = nn.Upsample(scale_factor=2, mode='bilinear')
-        self.DecCVBlock1 = ConvBlock((dim+channels[3]), channels[-1], convdrop)
-        self.DecCVBlock2 = ConvBlock(channels[-2]+channels[-1], channels[-2], convdrop)
-        self.DecCVBlock3 = ConvBlock(channels[-3]+channels[-2], channels[-3], convdrop)
-        self.DecCVBlock4 = ConvBlock(channels[-4]+channels[-3], channels[-4], convdrop)
+        # Conv Block
+        self.conv_model = nn.Sequential()
+        for i in range(conv_layers):
+            if i>0:
+                self.conv_model.append(nn.Dropout(convdrop))
+
+            layer = nn.Conv1d(dim, dim, kernel_size=3, stride=1, padding="same")
+            if (i+1)<conv_layers:
+                torch.nn.init.kaiming_uniform_(layer.weight, nonlinearity='relu')
+                self.conv_model.append(layer)
+                self.conv_model.append(conv_activation())
+            else:
+                torch.nn.init.xavier_uniform_(layer.weight, gain=1.0)
+                self.conv_model.append(layer)
+
+        # Secondary structure
+        self.complementary_layer = ComplementaryLayer(dim)
         
-        # OUT    
-        self.out = nn.Conv2d(channels[-4], 1, kernel_size=(1,1), stride=1, padding='valid')
-        torch.nn.init.xavier_uniform_(self.out.weight, gain=1.0)
+        # MSA Transformer Block
+        self.msa_transformers_block, self.msa_transformers_order = make_transformer_block(
+            msa_transformers_order, MSATransformer,
+            (dim, heads, seq_len, 0.1, norm_layer))
         
+        # Encoder Block
+        self.encoders_block, self.encoders_order = make_transformer_block(
+            encoders_order, EncoderLayer,
+            (dim, heads, seq_len, 0.1, norm_layer))
+
+        self._init_pos_enc(seq_len+1, dim)
         
-    def get_pad_mask(self, x):
-        x = x.view(-1, 16, 16, 256)
-        x = torch.permute(x, (0, 1, 3, 2)).contiguous() # b, Hpatch, patch_dim, W -> b, Hpatch, W, patch_dim
-        x = x.view(-1, 16**2, 16**2) # b, Hpatch, W, patch_dim -> b, Hpatch*Wpatch, patch_dim*patch_dim
+        # Head
+        self.final_norm = norm_layer(dim)
+        self.DotW = torch.nn.Parameter(torch.rand((dim, dim)), requires_grad=True)
+        torch.nn.init.xavier_uniform_(self.DotW, gain=1.0)
+        self.final_bias = torch.nn.Parameter(torch.tensor(-3.0), requires_grad=True)
+
+    def _init_pos_enc(self, seq: int, dim: int):
+        div  = 10000**(2 * (torch.arange(dim, dtype=torch.float32) // 2) / dim)
+        pos_enc = torch.arange(seq, dtype=torch.float32)
+        pos_enc = pos_enc.view(seq, 1).repeat(1, dim) / div
         
-        x = torch.sum(x, dim=-1, keepdim=False) # b, Hpatch*Wpatch
-        return (x==0.).float()
+        pos_enc[1:, 0::2] = torch.sin(pos_enc[1:, 0::2]) # dim 2i
+        pos_enc[1:, 1::2] = torch.cos(pos_enc[1:, 1::2]) # dim 2i+1
+        
+        self.register_buffer('pe', pos_enc)
+
+    # @torch.compile
+    # def pos_enc(self, seq: int, dim: int):
+    #     div  = 10000**(2 * (torch.arange(dim, dtype=torch.float32) // 2) / dim)
+    #     pos_enc = torch.arange(seq, dtype=torch.float32)
+    #     pos_enc = pos_enc.view(seq, 1).repeat(1, dim) / div
+        
+    #     pos_enc[1:, 0::2] = torch.sin(pos_enc[1:, 0::2]) # dim 2i
+    #     pos_enc[1:, 1::2] = torch.cos(pos_enc[1:, 1::2]) # dim 2i+1
+
+    #     return pos_enc
         
             
-    def forward(self, x):
-        mask = self.get_pad_mask(x) # b, seq, seq
-        att_mask = torch.unsqueeze(torch.unsqueeze(mask, 1), 1) # b, seq(1), heads(1), seq
+    def forward(self, seq: torch.Tensor, struct_vec: torch.Tensor): 
+        batch, msa_len, seq_len = seq.shape
+        x = self.embedding(seq) # b, msa, seq, dim
         
-        # EMB
-        x = self.embedding(x) # b, 256H, 256W, emb
-        x = torch.permute(x, (0, 3, 1, 2)).contiguous() # b, dim, 256H, 256W
+        x = x.view(batch*msa_len, seq_len, self.dim).transpose(1,2) # b+msa, dim, seq
+        x = self.conv_model(x)
+        x = x.transpose(1,2).reshape(batch, msa_len, seq_len, self.dim) # b, msa, seq, dim
+
+        seq_mask = (seq==0).to(x.dtype).view(-1, 1, 1, seq_len) # b, msa, seq -> b+msa, 1, 1, seq
+        msa_mask = (seq.sum(dim=-1) == 0).to(x.dtype) # b, msa
+        # b, msa -> b, 1, msa -> b, seq, msa -> b*seq, 1, 1, msa
+        msa_mask = msa_mask.unsqueeze(1).expand(-1, seq_len, -1).reshape(batch * seq_len, 1, 1, msa_len)
         
-        # ENCODER
-        x1 = self.EncCVBlock1(x) # b, 16, 256, 256 -> b, 32, 256, 256
-        x = self.pool(x1) # b, 32, 256, 256 -> b, 32, 128, 128
+        for li in self.msa_transformers_order:
+            l = self.msa_transformers_block[li]
+            x = l(x, msa_mask, seq_mask)
 
-        x2 = self.EncCVBlock2(x) # b, 32, 128, 128 -> b, 64, 128, 128
-        x = self.pool(x2) # b, 64, 128, 128 -> b, 64, 64, 64
+        x = x[:,0,:,:]   # batch, msa, seq, dim -> batch, seq, dim
+        # add nb token
+        nb_token = self.nb_token.expand(batch, 1, -1) # 1,1,dim -> b, 1, dim
+        x = torch.cat((nb_token, x), dim=1) # b, seq+1, dim
 
-        x3 = self.EncCVBlock3(x) # b, 64, 64, 64 -> b, 128, 64, 64
-        x = self.pool(x3) # b, 128, 64, 64 -> b, 128, 32, 32
+        seq = seq[:,0,:] # batch, msa, seq -> b, seq
+        nb_pad = torch.ones((batch, 1), dtype=seq.dtype, device=seq.device) # b,1
+        seq = torch.cat((nb_pad, seq), dim=1) # b, seq+1
 
-        x4 = self.EncCVBlock4(x) # b, 128, 32, 32 -> b, 256, 32, 32
-        x = self.pool(x4) # b, 256, 32, 32 -> b, 256, 16, 16
+        #x += self.pos_enc(x.size(1), x.size(2)).to(x.dtype).to(x.device)
+        x = x + self.pe.to(x.dtype)
+        x = self.complementary_layer(x, struct_vec)
+
+        att_mask = (seq==0).to(x.dtype).view(seq.size(0), 1, 1, seq.size(1)) # b, seq -> b, 1, 1, seq
+        for li in self.encoders_order:
+            l = self.encoders_block[li]
+            x, _ = l(x, att_mask) # b,seq+1,dim
+
+        x = self.final_norm(x)
+        x = torch.matmul(
+            torch.matmul(x, self.DotW), # @ dim,dim -> b, seq, dim
+            torch.transpose(x, 1, 2) # @ b, dim, seq -> b, seq, seq
+        )
+        x = x / self.final_dot_norm
+        x = x + self.final_bias
+        x = x - 1e7 * torch.eye(x.size(1), dtype=x.dtype, device=x.device).unsqueeze(0)
+
+        nbn, m = x[:, 0], x[:, 1:] # b, seq | b, seq-1, seq
+        nbn = torch.sigmoid(nbn)
+        m = torch.nn.functional.softmax(m, dim=-1)
         
-        # MIDDLE
-        x = torch.permute(x, (0, 2, 3, 1)).contiguous() # b, dim, 16, 16 -> b, 16, 16, dim
-        x = x.view(-1, 256, x.shape[-1]) # b, 16, 16, dim -> b, seq(256), dim
-        x = self.postpool(x)
-        x += self.PE
-        
-        for l in self.encoders_list:
-            x = l([x, x, x, att_mask])
-            
-        x = x.view(-1, 16, 16, x.shape[-1])
-        x = torch.permute(x, (0, 3, 1, 2)).contiguous() # b, H, W, dim -> b, dim, H, W
-            
-        # DECODER
-        x = self.upsample(x) # b, 256, 16, 16 -> # b, 256, 32, 32
-        x = torch.cat((x, x4), 1) # b, 256, 32, 32 + b, 256, 32, 32 -> b, 512, 32, 32
-        x = self.DecCVBlock1(x) # b, 512, 32, 32 -> b, 256, 32, 32
-
-        x = self.upsample(x) # b, 256, 32, 32 -> b, 256, 64, 64
-        x = torch.cat((x, x3), 1) # b, 256, 64, 64 + b, 128, 64, 64 -> b, 384, 64, 64
-        x = self.DecCVBlock2(x) # b, 384, 64, 64 -> b, 128, 64, 64
-
-        x = self.upsample(x) # b, 128, 64, 64 -> b, 128, 128, 128
-        x = torch.cat((x, x2), 1) # b, 128, 128, 128 + b, 64, 128, 128 -> b, 192, 128, 128
-        x = self.DecCVBlock3(x) # b, 192, 128, 128 -> b, 64, 128, 128
-
-        x = self.upsample(x) # b, 64, 128, 128 -> b, 64, 256, 256
-        x = torch.cat((x, x1), 1) # b, 64, 256, 256 + b, 32, 256, 256 -> b, 96, 256, 256
-        x = self.DecCVBlock4(x) # b, 96, 256, 256 -> b, 32, 256, 256
-        
-        # HEAD
-        x = self.out(x)
-        x = x.squeeze(1) # b, 32, 256, 256 -> b, 256, 256
-        x = torch.sigmoid(x)
-        
-        return x
+        return nbn, m
 
 
 
