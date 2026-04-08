@@ -56,36 +56,23 @@ class AlinaBatch:
                           lens=self.lens)
     
 
-class BaseInpPreprocessor:
-    def __call__(self, na: nsk.NucleicAcid) -> torch.Tensor:
-        inp_struct = torch.zeros(len(na)+1, dtype=torch.int32)
-        for i, j in na.pairs:
-            inp_struct[i+1] = j+1
-            inp_struct[j+1] = i+1
 
-        return inp_struct
-
-class BaseOutPreprocessor:
+class BasePreprocessor:
     def __call__(self, na: nsk.NucleicAcid) -> torch.Tensor:
-        inp_struct = torch.zeros(len(na), dtype=torch.int32)
+        inp_struct = torch.full((len(na),), -1, dtype=torch.int32)
         for i, j in na.pairs:
             inp_struct[i] = j
             inp_struct[j] = i
 
         return inp_struct
-
-class EmptyInpPreprocessor:
-    def __call__(self, na: nsk.NucleicAcid) -> torch.Tensor:
-        return torch.zeros(len(na)+1, dtype=torch.int32)
         
-class EmptyOutPreprocessor:
+class EmptyPreprocessor:
     def __call__(self, na: nsk.NucleicAcid) -> None: 
-        return torch.zeros(len(na), dtype=torch.int32)
+        return torch.full((len(na),), -1, dtype=torch.int32)
 
 
 class AlinaDataset:
-    NT_MAP = {"A":2, "U":3, "G":4, "C":5, "N":6}
-    MAX_MSA_LEN = 128
+    NT_MAP = {"A":1, "U":2, "G":3, "C":4, "N":5}
     
     def __init__(self,
                  nas: List[nsk.NucleicAcid],
@@ -93,14 +80,15 @@ class AlinaDataset:
                  inp_struct_source: str | None = "struct",
                  out_struct_source: str | None = None
                  ):
-        
-        assert inp_struct_source in {None, "struct", *nas[0].meta}
-        assert out_struct_source in {None, "struct", *nas[0].meta}
 
+        for na in nas:
+            assert inp_struct_source in {None, "struct", *na.meta}
+            assert out_struct_source in {None, "struct", *na.meta}
+        
         self.nas = nas
-        self.inp_preprocessor = EmptyInpPreprocessor() if (inp_struct_source is None) else BaseInpPreprocessor()
+        self.inp_preprocessor = EmptyPreprocessor() if (inp_struct_source is None) else BasePreprocessor()
         self.inp_struct_source = inp_struct_source
-        self.out_preprocessor = EmptyOutPreprocessor() if (out_struct_source is None) else BaseOutPreprocessor()
+        self.out_preprocessor = EmptyPreprocessor() if (out_struct_source is None) else BasePreprocessor()
         self.out_struct_source = out_struct_source
         self.cache = cache
         self.X: List[AlinaDataPoint | None] = [None]*len(nas)
@@ -130,8 +118,13 @@ class AlinaDataset:
 
         if "msa" in na.meta.keys():
             msa = na.meta["msa"]
+            msa_len = len(msa)
+            if msa[0]!=na.seq:
+                msa = [na.seq] + msa # prepend target seq to msa
+                msa_len+=1
+                
             maxl = max([len(seq) for seq in msa])
-            seq_tensor = torch.zeros((self.MAX_MSA_LEN, maxl), dtype=torch.int32)
+            seq_tensor = torch.zeros((msa_len, maxl), dtype=torch.int32)
             for i, seq in enumerate(msa):
                 t = torch.IntTensor([self.NT_MAP[nt] for nt in seq])
                 seq_tensor[i,:len(seq)] = t
@@ -172,21 +165,21 @@ class AlinaDataset:
         
 
 def collate_fn(dps: List[AlinaDataPoint]) -> AlinaBatch:
-    MAX_MSA_LEN: int = 128
-    N: int = len(dps)
-    #maxl: int = max([dp.len for dp in dps])
-    maxl = 256
     
-    seq = torch.zeros((N, MAX_MSA_LEN, maxl), dtype=torch.int32)
-    inp_struct = torch.zeros((N, maxl+1), dtype=torch.int32)
-    out_struct = torch.zeros((N, maxl), dtype=torch.int32)
+    N: int = len(dps) # batch
+    max_seq_len: int = max([dp.len for dp in dps])
+    max_msa_len: int = max([dp.seq.size(0) for dp in dps])
+    
+    seq = torch.zeros((N, max_msa_len, max_seq_len), dtype=torch.int32)
+    inp_struct = torch.zeros((N, max_seq_len), dtype=torch.int32)
+    out_struct = torch.zeros((N, max_seq_len), dtype=torch.int32)
     lens = []
     
     for i, dp in enumerate(dps):
-        n = len(dp)
-        seq[i,:,:n] = dp.seq
-        inp_struct[i, :n+1] = dp.inp_struct
-        out_struct[i, :n]   = dp.out_struct
+        msa_len, seq_len = dp.seq.shape
+        seq[i,:msa_len,:seq_len] = dp.seq
+        inp_struct[i, :seq_len] = dp.inp_struct
+        out_struct[i, :seq_len]   = dp.out_struct
         lens.append(dp.len)
     
     return AlinaBatch(
