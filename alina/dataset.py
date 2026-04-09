@@ -116,27 +116,26 @@ class AlinaDataset:
         else: 
             out_struct = self.out_preprocessor(na)
 
+        seqs_list, seqs_set = [na.seq], {na.seq}
+        seq_len = len(na.seq)
+        
         if "msa" in na.meta.keys():
-            msa = na.meta["msa"]
-            msa_len = len(msa)
-            if msa[0]!=na.seq:
-                msa = [na.seq] + msa # prepend target seq to msa
-                msa_len+=1
-                
-            maxl = max([len(seq) for seq in msa])
-            seq_tensor = torch.zeros((msa_len, maxl), dtype=torch.int32)
-            for i, seq in enumerate(msa):
-                t = torch.IntTensor([self.NT_MAP[nt] for nt in seq])
-                seq_tensor[i,:len(seq)] = t
-        else: 
-            maxl = len(na)
-            seq_tensor =torch.zeros((1, maxl), dtype=torch.int32)
-            seq_tensor[0] = torch.IntTensor([self.NT_MAP[nt] for nt in na.seq])
+            for seq in na.meta["msa"]:
+                if seq not in seqs_set:
+                    assert len(seq)==seq_len, f"Sequence length mismatch: {len(seq)} != {seq_len}"
+                    seqs_set.add(seq)
+                    seqs_list.append(seq)
+        msa_len = len(seqs_list)
+        seq_tensor = torch.zeros((msa_len, seq_len), dtype=torch.int32)
+        
+        for i, seq in enumerate(seqs_list):
+            seq_tensor[i,:] = torch.IntTensor([self.NT_MAP[nt] for nt in seq])
+            
         
         dp: AlinaDataPoint = AlinaDataPoint(seq=seq_tensor,
                                             inp_struct=inp_struct,
                                             out_struct=out_struct,
-                                            len=maxl)
+                                            len=seq_len)
         if self.cache:
             self.X[n] = dp.compress()
         

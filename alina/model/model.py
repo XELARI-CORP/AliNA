@@ -63,13 +63,15 @@ class Model(nn.Module):
 
 
     @torch.compile
-    def pos_enc(self, seq: int, dim: int, device: torch.device):
-        div  = 10000**(2 * (torch.arange(dim, dtype=torch.float32, device=device) // 2) / dim)
-        pos_enc = torch.arange(seq, dtype=torch.float32, device=device)
+    def pos_enc(self, seq: int, dim: int, start_idx: int, device: torch.device):
+        div = torch.arange(dim, dtype=torch.float32, device=device)
+        div = 10000**(2 * (div//2) / dim)
+        
+        pos_enc = torch.arange(start_idx, seq+start_idx, dtype=torch.float32, device=device) # 1,...,seq if start_idx=1
         pos_enc = pos_enc.view(seq, 1).repeat(1, dim) / div
         
-        pos_enc[1:, 0::2] = torch.sin(pos_enc[1:, 0::2]) # dim 2i
-        pos_enc[1:, 1::2] = torch.cos(pos_enc[1:, 1::2]) # dim 2i+1
+        pos_enc[:, 0::2] = torch.sin(pos_enc[:, 0::2]) # dim 2i
+        pos_enc[:, 1::2] = torch.cos(pos_enc[:, 1::2]) # dim 2i+1
 
         return pos_enc
         
@@ -90,23 +92,21 @@ class Model(nn.Module):
         for li in self.seq_encoders_order:
             l = self.seq_encoders_block[li]
             x = l(x, msa_mask, seq_mask)
-
+            
         x = x[:,0,:,:]   # batch, msa, seq, dim -> batch, seq, dim
+        x += self.pos_enc(x.size(1), x.size(2), start_idx=1, device=x.device).to(x.dtype)
+        # graph layer
+        x = self.complementary_layer(x, struct_vec)
         # add nb embed
         nb_embed = self.nb_embed.view(1,1,-1).expand(batch, 1, -1) # dim -> 1,1,dim -> b, 1, dim
         x = torch.cat((nb_embed, x), dim=1) # b, seq+1, dim
-        struct_vec = torch.cat( (torch.full((batch,1),-1), struct_vec), dim=-1) # batch, seq -> batch, seq+1, add nb nt
-        struct_vec = struct_vec + (struct_vec!=0).to(struct_vec.dtype) # increment indices
         
-        x = self.complementary_layer(x, struct_vec)
-
         # struct att mask
         seq = seq[:,0,:] # batch, msa, seq -> b, seq
         nb_pad = torch.ones((batch, 1), dtype=seq.dtype, device=seq.device) # b,1
         seq = torch.cat((nb_pad, seq), dim=1) # b, seq+1
         att_mask = (seq==0).to(x.dtype).view(seq.size(0), 1, 1, seq.size(1)) # b, seq -> b, 1, 1, seq
-        
-        x += self.pos_enc(x.size(1), x.size(2), x.device).to(x.dtype)
+        # struct encoders
         for li in self.struct_encoders_order:
             l = self.struct_encoders_block[li]
             x, _ = l(x, att_mask) # b,seq+1,dim

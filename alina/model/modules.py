@@ -116,15 +116,13 @@ class MHAttention(nn.Module):
         self.dim = dim
         self.depth = dim//heads
         self.norm = math.sqrt(self.depth)
-
-        self.use_rope = use_rope
         
         self.Q = nn.Linear(dim, dim)
         self.K = nn.Linear(dim, dim)
         self.V = nn.Linear(dim, dim)
         self.O = nn.Linear(dim, dim)
 
-        if self.use_rope:
+        if use_rope:
             self.rope = RoPE(self.depth)
         else:
             self.rope = FakeRoPE()
