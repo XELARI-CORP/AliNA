@@ -15,7 +15,7 @@ class AlinaDataPoint:
     len: int
 
     def __len__(self):
-        return self.seq.size(0)
+        return self.seq.size(1) # seq dim
 
     def to(self, device: str | torch.device):
         device = torch.device(device)
@@ -56,30 +56,42 @@ class AlinaBatch:
                           lens=self.lens)
     
 
-class BaseInputPreprocessor:
+
+class BasePreprocessor:
     def __call__(self, na: nsk.NucleicAcid) -> torch.Tensor:
-        inp_struct = torch.zeros(len(na)+1, dtype=torch.int32)
+        inp_struct = torch.full((len(na),), -1, dtype=torch.int32)
         for i, j in na.pairs:
-            inp_struct[i+1] = j+1
-            inp_struct[j+1] = i+1
+            inp_struct[i] = j
+            inp_struct[j] = i
 
         return inp_struct
+        
+class EmptyPreprocessor:
+    def __call__(self, na: nsk.NucleicAcid) -> None: 
+        return torch.full((len(na),), -1, dtype=torch.int32)
 
 
 class AlinaDataset:
-    NT_MAP = {"No_Bond": 1, "A":2, "U":3, "G":4, "C":5}
-
+    NT_MAP = {"A":1, "U":2, "G":3, "C":4, "N":5}
+    
     def __init__(self,
                  nas: List[nsk.NucleicAcid],
-                 input_preprocessor: Callable[[nsk.NucleicAcid], torch.Tensor] = BaseInputPreprocessor(),
-                 cache: bool = True
+                 cache: bool = True,
+                 inp_struct_source: str | None = "struct",
+                 out_struct_source: str | None = None
                  ):
+
+        for na in nas:
+            assert inp_struct_source in {None, "struct", *na.meta}
+            assert out_struct_source in {None, "struct", *na.meta}
         
         self.nas = nas
-        self.input_preprocessor = input_preprocessor
+        self.inp_preprocessor = EmptyPreprocessor() if (inp_struct_source is None) else BasePreprocessor()
+        self.inp_struct_source = inp_struct_source
+        self.out_preprocessor = EmptyPreprocessor() if (out_struct_source is None) else BasePreprocessor()
+        self.out_struct_source = out_struct_source
         self.cache = cache
         self.X: List[AlinaDataPoint | None] = [None]*len(nas)
-
     
     def __len__(self):
         return len(self.nas)
@@ -91,18 +103,39 @@ class AlinaDataset:
             return x.decompress()
         
         na: nsk.NucleicAcid = self.nas[n]
-        seq = torch.IntTensor([1] + [self.NT_MAP[nt] for nt in na.seq])
+
+        if self.inp_struct_source not in (None, "struct"):
+            ss = nsk.NA(na.meta[self.inp_struct_source]) # e.g., take "coev_struct" and create pairs via NA class
+            inp_struct = self.inp_preprocessor(ss)
+        else:
+            inp_struct = self.inp_preprocessor(na)
+
+        if self.out_struct_source not in (None, "struct"):
+            ss = nsk.NA(na.meta[self.out_struct_source])
+            out_struct = self.out_preprocessor(ss)
+        else: 
+            out_struct = self.out_preprocessor(na)
+
+        seqs_list, seqs_set = [na.seq], {na.seq}
+        seq_len = len(na.seq)
         
-        inp_struct = self.input_preprocessor(na)
-        out_struct = torch.zeros(len(na), dtype=torch.int32)
-        for i, j in na.pairs:
-            out_struct[i] = j
-            out_struct[j] = i
+        if "msa" in na.meta.keys():
+            for seq in na.meta["msa"]:
+                if seq not in seqs_set:
+                    assert len(seq)==seq_len, f"Sequence length mismatch: {len(seq)} != {seq_len}"
+                    seqs_set.add(seq)
+                    seqs_list.append(seq)
+        msa_len = len(seqs_list)
+        seq_tensor = torch.zeros((msa_len, seq_len), dtype=torch.int32)
         
-        dp: AlinaDataPoint = AlinaDataPoint(seq=seq,
+        for i, seq in enumerate(seqs_list):
+            seq_tensor[i,:] = torch.IntTensor([self.NT_MAP[nt] for nt in seq])
+            
+        
+        dp: AlinaDataPoint = AlinaDataPoint(seq=seq_tensor,
                                             inp_struct=inp_struct,
                                             out_struct=out_struct,
-                                            len=len(na)+1)
+                                            len=seq_len)
         if self.cache:
             self.X[n] = dp.compress()
         
@@ -131,19 +164,21 @@ class AlinaDataset:
         
 
 def collate_fn(dps: List[AlinaDataPoint]) -> AlinaBatch:
-    N: int = len(dps)
-    maxl: int = max([len(dp) for dp in dps])
     
-    seq = torch.zeros((N, maxl), dtype=torch.int32)
-    inp_struct = torch.zeros((N, maxl), dtype=torch.int32)
-    out_struct = torch.zeros((N, maxl-1), dtype=torch.int32)
+    N: int = len(dps) # batch
+    max_seq_len: int = max([dp.len for dp in dps])
+    max_msa_len: int = max([dp.seq.size(0) for dp in dps])
+    
+    seq = torch.zeros((N, max_msa_len, max_seq_len), dtype=torch.int32)
+    inp_struct = torch.zeros((N, max_seq_len), dtype=torch.int32)
+    out_struct = torch.zeros((N, max_seq_len), dtype=torch.int32)
     lens = []
     
     for i, dp in enumerate(dps):
-        n = len(dp)
-        seq[i, :n] = dp.seq
-        inp_struct[i, :n] = dp.inp_struct
-        out_struct[i, :n-1] = dp.out_struct
+        msa_len, seq_len = dp.seq.shape
+        seq[i,:msa_len,:seq_len] = dp.seq
+        inp_struct[i, :seq_len] = dp.inp_struct
+        out_struct[i, :seq_len]   = dp.out_struct
         lens.append(dp.len)
     
     return AlinaBatch(

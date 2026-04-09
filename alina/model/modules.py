@@ -1,8 +1,29 @@
 import math
 import torch
 import torch.nn as nn
+from typing import List
 
+def make_encoder_block(layers_order: int | List[int],
+                       dim: int,
+                       heads: int,
+                       do: float,
+                       encoder_layer,
+                       norm_layer):
+    
+        if isinstance(layers_order, int):
+            layers_order = list(range(1, layers_order+1))
 
+        assert 0 not in layers_order, "Layer indices must start from 1, not 0"
+        assert set(layers_order) == set(range(1, 1+max(layers_order))), "All layers must be used"
+
+        transformers_list = nn.ModuleList()
+        for _ in range(max(layers_order)):
+            transformers_list.append(encoder_layer(dim=dim, heads=heads, do=do,
+                                                   norm_layer=norm_layer))
+
+        layers_order = [i-1 for i in layers_order]
+
+        return transformers_list, layers_order
         
 class ComplementaryLayer(nn.Module):
     def __init__(self, dim: int):
@@ -22,7 +43,7 @@ class ComplementaryLayer(nn.Module):
     def take_compl_embeds(self, x: torch.Tensor, struct_vec: torch.Tensor) -> torch.Tensor:
         batch, seq, dim = x.shape
         
-        idx = torch.where(struct_vec!=0, struct_vec, torch.arange(seq, device=x.device))
+        idx = torch.where(struct_vec!=-1, struct_vec, torch.arange(seq, device=x.device))
         idx = idx + seq*torch.arange(batch, dtype=torch.int32, device=idx.device).unsqueeze(1)
         assert idx.size(0) == batch and idx.size(1) == seq
 
@@ -30,7 +51,7 @@ class ComplementaryLayer(nn.Module):
 
 
     def forward(self, x: torch.Tensor, struct_vec: torch.Tensor):
-        free_nts = (struct_vec==0).to(x.dtype) # b, seq
+        free_nts = (struct_vec==-1).to(x.dtype) # b, seq
         compl_nts = 1.0 - free_nts
 
         x = torch.cat([x, free_nts.unsqueeze(2), compl_nts.unsqueeze(2)], dim=-1) # b, seq, dim+2
@@ -43,9 +64,52 @@ class ComplementaryLayer(nn.Module):
 
         return x
 
+class FakeRoPE(nn.Module):
+    def __init__(self):
+        super().__init__()
+    def forward(self, q, k):
+        return q, k
 
+class RoPE(nn.Module):
+    def __init__(self, depth):
+        super().__init__()
+
+        self.depth = depth
+        
+    def swap_dims(self,x):
+        x1, x2 = x.chunk(2, dim=-1)
+        return torch.cat((-x2,x1), dim=-1)
+        
+    @torch.compile
+    def prepare_rope(self, seq_len, device, dtype):
+        
+        i = torch.arange(0, self.depth, 2, device=device, dtype=dtype) #0,2...,depth-2
+        dim_freq = 10_000 ** (-i / self.depth)
+        pos  = torch.arange(seq_len, device=device, dtype=dtype) 
+
+        freq = torch.outer(pos, dim_freq) # seq_len, depth//2
+        freq = torch.cat((freq, freq), dim=-1) # seq_len, depth
+        
+        sin = freq.sin().view(1, 1, seq_len, self.depth) # 1,1,seq_len,depth
+        cos = freq.cos().view(1, 1, seq_len, self.depth) # 1,1,seq_len,depth
+
+        return sin, cos
+         
+    def forward(self, q, k):
+        # q.shape = b,h,seq_len,depth
+        seq_len = q.size(-2)
+
+        sin, cos = self.prepare_rope(seq_len, q.device, q.dtype)
+        
+        q = (q * cos) + (self.swap_dims(q) * sin)
+        k = (k * cos) + (self.swap_dims(k) * sin)
+
+        return q, k
+        
+
+    
 class MHAttention(nn.Module):
-    def __init__(self, dim: int, heads: int):
+    def __init__(self, dim: int, heads: int, use_rope: bool):
         super().__init__()
         
         self.heads = heads
@@ -58,38 +122,47 @@ class MHAttention(nn.Module):
         self.V = nn.Linear(dim, dim)
         self.O = nn.Linear(dim, dim)
 
+        if use_rope:
+            self.rope = RoPE(self.depth)
+        else:
+            self.rope = FakeRoPE()
+        
         for l in [self.Q, self.K, self.V, self.O]:
             torch.nn.init.xavier_uniform_(l.weight, gain=1.0)
             torch.nn.init.zeros_(l.bias)
-
-        
+    
     def forward(self, q, k, v, mask):
-        batch, seq = q.size(0), q.size(1)
+        # if common att, then q.shape() = (b,seq,dim)
+        # if msa att, then q.shape() = (b,_,n,dim) where n ~ msa or seq
+        orig_shape = q.shape
+        batch, n = orig_shape[0], orig_shape[-2]
 
-        # batch, seq, heads, dim
-        q = self.Q(q).view(batch, seq, self.heads, self.depth)
-        k = self.K(k).view(batch, seq, self.heads, self.depth)
-        v = self.V(v).view(batch, seq, self.heads, self.depth)
+        # virt batch (0), n (1), heads (2), depth (3)
+        q = self.Q(q).view(-1, n, self.heads, self.depth)
+        k = self.K(k).view(-1, n, self.heads, self.depth)
+        v = self.V(v).view(-1, n, self.heads, self.depth)
 
-        # batch, heads, seq, dim
-        q = q.permute(0, 2, 1, 3)
-        k = k.permute(0, 2, 3, 1)
-        v = v.permute(0, 2, 1, 3)
+        q = q.permute(0, 2, 1, 3) # b, h, n, d
+        k = k.permute(0, 2, 1, 3) # b(0), h(1), n(2), d(3)
+        v = v.permute(0, 2, 1, 3) # b, h, n, d
+
+        q, k = self.rope(q, k)
+            
+        k = k.permute(0, 1, 3, 2) # b, h, d, n 
         
         #att
-        g = torch.matmul(q, k)
+        g = torch.matmul(q, k) # b, h, n, n
         g /= self.norm
         A = g - mask*1e7
         A = torch.nn.functional.softmax(A, dim=-1)
 
-        att = torch.matmul(A, v) # b,h,s,d
+        att = torch.matmul(A, v) # b, h, n, d
 
-        att = att.permute(0, 2, 1, 3) # b,s,h,d
-        att = att.reshape(batch, seq, self.dim)
+        att = att.permute(0, 2, 1, 3).contiguous() # b, n, h, d
+        att = att.view(*orig_shape) # virt batch, n, head, depth -> batch, _, n, dim
         att = self.O(att)
         
         return att, g
-    
     
 class FFSwiglu(nn.Module):
     def __init__(self, dim: int, do: float):
@@ -117,7 +190,46 @@ class FFSwiglu(nn.Module):
         x = self.l2(x)
 
         return x
-    
+
+class MSATransformer(nn.Module):
+    def __init__(self, dim: int, heads: int, do: float, norm_layer):
+        super().__init__()
+        self.dim = dim
+        self.heads = heads
+
+        self.SeqAtt = MHAttention(dim, heads, True)
+        self.MSAAtt = MHAttention(dim, heads, False)
+        self.drop = nn.Dropout(do)
+
+        self.norm_layers = nn.ModuleList([norm_layer(dim) for _ in range(3)])
+
+        self.FF = FFSwiglu(dim, do)
+
+    def forward(self, x, msa_mask, seq_mask):
+        # x.shape: b(0), msa(1), seq(2), dim(3)
+        # seq-wise att
+        att = self.norm_layers[0](x)
+        att, _ = self.SeqAtt(att, att, att, seq_mask)
+        att = self.drop(att)
+        x += att
+
+        x = x.permute(0, 2, 1, 3).contiguous() # b, seq, msa, dim
+
+        #print(x.shape, msa_mask.shape) # !!!
+        att = self.norm_layers[1](x)
+        att, _ = self.MSAAtt(att, att, att, msa_mask)
+        att = self.drop(att)
+        x += att
+
+        x = x.permute(0, 2, 1, 3).contiguous() # b, msa, seq, dim
+        
+        ff = self.norm_layers[2](x)
+        ff = self.FF(ff)
+        x += ff
+
+        return x
+        
+        
 
 class EncoderLayer(nn.Module):
     def __init__(self, dim: int, heads: int, do: float, norm_layer):
@@ -125,7 +237,7 @@ class EncoderLayer(nn.Module):
         self.dim = dim
         self.heads = heads
 
-        self.Att = MHAttention(self.dim, self.heads)
+        self.Att = MHAttention(dim, heads, False)
         self.drop = nn.Dropout(do)
 
         self.norm1 = norm_layer(dim)
