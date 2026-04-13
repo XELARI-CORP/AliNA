@@ -211,7 +211,7 @@ class MSATransformer(nn.Module):
         att = self.norm_layers[0](x)
         att, _ = self.SeqAtt(att, att, att, seq_mask)
         att = self.drop(att)
-        x += att
+        x = x + att
 
         x = x.permute(0, 2, 1, 3).contiguous() # b, seq, msa, dim
 
@@ -219,13 +219,13 @@ class MSATransformer(nn.Module):
         att = self.norm_layers[1](x)
         att, _ = self.MSAAtt(att, att, att, msa_mask)
         att = self.drop(att)
-        x += att
+        x = x + att
 
         x = x.permute(0, 2, 1, 3).contiguous() # b, msa, seq, dim
         
         ff = self.norm_layers[2](x)
         ff = self.FF(ff)
-        x += ff
+        x = x + ff
 
         return x
         
@@ -251,10 +251,10 @@ class EncoderLayer(nn.Module):
         att = self.norm1(x)
         att, scores = self.Att(att, att, att, mask)
         att = self.drop(att)
-        x += att
+        x = x + att
 
         ff = self.norm2(x)
         ff = self.FF(ff)
-        x += ff
+        x = x + ff
 
         return x, scores

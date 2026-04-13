@@ -170,15 +170,15 @@ def collate_fn(dps: List[AlinaDataPoint]) -> AlinaBatch:
     max_msa_len: int = max([dp.seq.size(0) for dp in dps])
     
     seq = torch.zeros((N, max_msa_len, max_seq_len), dtype=torch.int32)
-    inp_struct = torch.zeros((N, max_seq_len), dtype=torch.int32)
-    out_struct = torch.zeros((N, max_seq_len), dtype=torch.int32)
+    inp_struct = torch.full((N, max_seq_len), -1, dtype=torch.int32)
+    out_struct = torch.full((N, max_seq_len), -1, dtype=torch.int32)
     lens = []
     
     for i, dp in enumerate(dps):
         msa_len, seq_len = dp.seq.shape
         seq[i,:msa_len,:seq_len] = dp.seq
-        inp_struct[i, :seq_len] = dp.inp_struct
-        out_struct[i, :seq_len]   = dp.out_struct
+        inp_struct[i, :seq_len]  = dp.inp_struct
+        out_struct[i, :seq_len]  = dp.out_struct
         lens.append(dp.len)
     
     return AlinaBatch(

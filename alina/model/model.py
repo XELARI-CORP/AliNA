@@ -94,7 +94,7 @@ class Model(nn.Module):
             x = l(x, msa_mask, seq_mask)
             
         x = x[:,0,:,:]   # batch, msa, seq, dim -> batch, seq, dim
-        x += self.pos_enc(x.size(1), x.size(2), start_idx=1, device=x.device).to(x.dtype)
+        x = x + self.pos_enc(x.size(1), x.size(2), start_idx=1, device=x.device).to(x.dtype)
         # graph layer
         x = self.complementary_layer(x, struct_vec)
         # add nb embed
