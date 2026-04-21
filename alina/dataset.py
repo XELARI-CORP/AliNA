@@ -77,11 +77,12 @@ class AlinaDataset:
     
     def __init__(self,
                  nas: List[nsk.NucleicAcid],
-                 msa_sample: float = 1.0,
+                 msa_sample_fraction: float = 1.0,
                  msa_sample_max_size: int = 100,
                  cache: bool = True,
                  inp_struct_source: str | None = "struct",
                  out_struct_source: str | None = None,
+                 valid: bool = False
                  ):
 
         for na in nas:
@@ -89,8 +90,10 @@ class AlinaDataset:
             assert out_struct_source in {None, "struct", *na.meta}
         
         self.nas = nas
-        self.msa_sample = msa_sample
+        self.msa_sample_fraction = msa_sample_fraction
         self.msa_sample_max_size = msa_sample_max_size
+
+        self._valid = valid
         
         self.inp_preprocessor = EmptyPreprocessor() if (inp_struct_source is None) else BasePreprocessor()
         self.inp_struct_source = inp_struct_source
@@ -155,8 +158,9 @@ class AlinaDataset:
     def save(self, path):
         with open(path, 'wb') as f:
             pickle.dump({"nas":self.nas, "X":self.X,
-                         "msa_sample":self.msa_sample,
-                         "msa_sample_max_size":self.msa_sample_max_size},
+                         "msa_sample_fraction":self.msa_sample_fraction,
+                         "msa_sample_max_size":self.msa_sample_max_size,
+                         "valid": self._valid},
                         f)
 
     @classmethod
@@ -165,8 +169,9 @@ class AlinaDataset:
             data = pickle.load(f)
 
         ds = cls(nas=data["nas"],
-                 msa_sample=data["msa_sample"],
-                 msa_sample_max_size=data["msa_sample_max_size"])
+                 msa_sample_fraction=data["msa_sample_fraction"],
+                 msa_sample_max_size=data["msa_sample_max_size"],
+                 valid=data["valid"])
         
         ds.X = data["X"]
         return ds
@@ -182,21 +187,24 @@ class AlinaDataset:
         n = msa.size(0)
         device = msa.device
         
-        k = int(math.ceil(n * self.msa_sample))
+        k = int(math.ceil(n * self.msa_sample_fraction))
         k = min(k, self.msa_sample_max_size)
         
         assert k <= n
     
         if k <= 1:
             return msa[:1, :]
-            
-        inds = torch.randperm(n - 1, device=device) + 1 # 1...(n-1)
-        inds = inds[:(k-1)]
+
+        if self._valid:
+            idxs = torch.arange(n-1, device=device) + 1 # 0...n-2 -> 1...n-1
+        else:
+            idxs = torch.randperm(n-1, device=device) + 1 # 1...(n-1)
+        idxs = idxs[:(k-1)]
 
         first_ind = torch.tensor([0], device=device)
-        inds = torch.cat([first_ind, inds])
+        idxs = torch.cat([first_ind, idxs])
         
-        return msa[inds,:]
+        return msa[idxs,:]
         
 
 def collate_fn(dps: List[AlinaDataPoint]) -> AlinaBatch:
