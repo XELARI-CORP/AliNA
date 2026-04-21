@@ -1,0 +1,126 @@
+import sys
+sys.path.append('/usr/local/lib/python3.12/dist-packages')
+sys.path.append('/home/pavel/repos/AliNA')
+
+import json
+import fire
+import torch
+import random
+import mlflow
+import numpy as np
+from pathlib import Path
+from loguru import logger
+
+from alina import AliNA
+from alina.dataset import AlinaDataset
+
+from train_utils import (
+    setup_model_optimizer,
+    setup_train_modules,
+    train )
+
+SEED=42
+random.seed(SEED)
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+torch.cuda.manual_seed(SEED)
+
+@logger.catch
+def main(
+    train_data_path: str,
+    valid_data_path: str,
+    config_path: str,
+    work_dir: str,
+    model_name: str,
+    checkpoint_path: str | None = None):
+    """
+    Main entry point for training
+    """
+    # 1. Setup paths
+    config_path = Path(config_path)
+    work_dir = Path(work_dir)
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    logger.info("=== Start Training ===")
+    
+    # 2. Parse Config File
+    if not config_path.exists():
+        logger.critical(f"Config file not found at {config_path}")
+        return
+        
+    logger.info(f"Load configuration from {config_path}...")
+    with open(config_path, 'r') as f:
+        config = json.load(f)
+    config["model_name"]    = model_name
+    config["train_dataset"] = train_data_path
+    config["valid_dataset"] = valid_data_path
+    config["hparams"]["conv_activation"] = torch.nn.SiLU
+    config["hparams"]["norm_layer"]      = torch.nn.LayerNorm
+
+    # Determine device (using the IDX from your config if available)
+    train_const = config.get('const', {})
+    device_idx = train_const.get('DEVICE_IDX', 0)
+    device = torch.device(f'cuda:{device_idx}' if torch.cuda.is_available() else 'cpu')
+    logger.info(f"Use device: {device}")
+
+    # 3. Load Datasets
+    logger.info("Initialize datasets...")
+    train_data = AlinaDataset.load(train_data_path)
+    valid_data = AlinaDataset.load(valid_data_path)
+    logger.success(f"Loaded {len(train_data)} train and {len(valid_data)} valid samples")
+
+    # 4. Setup Model & Optimizer
+    model, optim = setup_model_optimizer(
+        model_class=AliNA, 
+        config=config,
+        checkpoint=checkpoint_path,
+        device=device,
+        compile_model=config.get("compile_model", False)
+    )
+    
+    # 5. Setup Train Modules (DataLoaders, Schedulers, Loss)
+    logger.info("Configurate training modules and DataLoaders...")
+    modules = setup_train_modules(
+        model=model,
+        config=config,
+        work_dir=work_dir,
+        train_data=train_data,
+        valid_data=valid_data,
+        optim=optim
+    )
+
+    # 6. Run Training
+    mlflow.set_tracking_uri(uri="http://127.0.0.1:31420") 
+    mlflow.set_experiment(config.get("experiment_name", "AliNA"))
+    mlflow.start_run(run_name=model_name)
+    mlflow.log_params(config)
+
+    checkpointer = modules['checkpointer']
+    try:
+        logger.info("Start train loop...")
+        train(
+            model=model,
+            modules=modules,
+            train_const=train_const,
+            device=device,
+            verbose=True
+        )
+        print()
+        logger.success("Training finished successfully")
+        
+    except KeyboardInterrupt:
+        logger.warning("Training interrupted by user (Ctrl+C)")
+        checkpointer("stopped")
+        
+    except Exception as e:
+        logger.error(f"Training failed due to error: {e}")
+        checkpointer("error")
+        raise e
+        
+    finally:
+        mlflow.end_run()
+        logger.info("MLflow session closed")
+
+if __name__ == '__main__':
+    # Fire exposes the main function to the command line automatically
+    fire.Fire(main)
