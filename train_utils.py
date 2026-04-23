@@ -13,7 +13,7 @@ from torch.nn import Module
 from pathlib import Path
 from typing import Any
 
-from alina.utils import AlinaMetrics, Loss, get_cexplr_scheduler, Checkpointer, GpuWatch
+from alina.utils import ClasMetrics, PredMetrics, MaskedCELoss, CELoss, get_cexplr_scheduler, Checkpointer, GpuWatch
 from alina.dataset import AlinaDataset, collate_fn
 
 ### FUNCTIONS ###
@@ -69,6 +69,9 @@ def setup_train_modules(
     lr_params    = config['lr_params']
     batch_size   = config['const']['BATCH_SIZE']
     model_name   = config['model_name']
+    model_task   = config['model_task']
+    
+    assert model_task in ["p","c"], f"unknown model task: expected 'p' or 'c', got {model_task}"
     
     work_dir = Path(work_dir)
 
@@ -83,10 +86,16 @@ def setup_train_modules(
         
     ### setup train modules 
     modules = dict()
-    modules['optim'] = optim
-    modules['scaler'] = torch.amp.GradScaler("cuda")
-    modules['log_fn'] = mlflow.log_metric
-    modules['loss_fn'] = Loss
+    if model_task == "c":
+        loss_fn, metrics_fn = MaskedCELoss, ClasMetrics
+    elif model_task == "p":
+        loss_fn, metrics_fn = CELoss, PredMetrics
+        
+    modules['optim']        = optim
+    modules['scaler']       = torch.amp.GradScaler("cuda")
+    modules['log_fn']       = mlflow.log_metric
+    modules['loss_fn']      = loss_fn
+    modules['metrics_fn']   = metrics_fn
     modules['train_loader'] = train_loader
     modules['valid_loader'] = valid_loader
     modules["checkpointer"] = Checkpointer(work_dir / model_name, model, optim)
@@ -98,33 +107,40 @@ def setup_train_modules(
 def validate(model: Module,
              loader: DataLoader,
              loss_fn: Any,
+             metrics_fn: Any,
              verbose: bool = False):
     
     device = model.device
     iterf = tqdm.tqdm if verbose else iter
-    loss, recall, prec, tp_ratio, fp_ratio, Fscore = 0, 0, 0, 0, 0, 0
-    c = 0
+    
+    loss_sum, c = 0, 0
+    metrics_sum = {}
+    
     model.eval()
     with torch.no_grad():
         for b in iterf(loader):
             b = b.to(device)
             _, pred = model(b.seq, b.inp_struct)
-            pred = pred.cpu()
-            y = b.out_struct.cpu()
-            inp = b.inp_struct.cpu()
-
-            loss += loss_fn(pred, inp, y)
-            _recall, _prec, _tp_ratio, _fp_ratio, _Fscore = AlinaMetrics(pred, y, inp)
             
-            recall += _recall
-            prec += _prec
-            tp_ratio += _tp_ratio
-            fp_ratio += _fp_ratio
-            Fscore += _Fscore
+            loss_batch = loss_fn(pred, b.inp_struct, b.out_struct)
+            loss_sum += loss_batch.item()
+            
+            metrics_batch = metrics_fn(pred, b.inp_struct, b.out_struct)
+            
+            if c == 0:
+                metrics_sum = {k:v for k, v in metrics_batch.items()}
+            else:
+                for k, v in metrics_batch.items():
+                    metrics_sum[k] += v
+                
             c+=1
+            
     model.train()
+
+    metrics = {k: v / c for k, v in metrics_sum.items()}
+    loss = loss_sum / c
     
-    return loss/c, recall/c, prec/c, tp_ratio/c, fp_ratio/c, Fscore/c
+    return loss, metrics
 
 @logger.catch
 def train(model: Module,
@@ -132,11 +148,13 @@ def train(model: Module,
           train_const:  dict[str, Any],
           device: torch.device | str = 'cpu',
           verbose: bool | None = False):
+        
     # unpack training modules
     optim        = modules['optim']
     scaler       = modules['scaler']
     log_fn       = modules['log_fn']
     loss_fn      = modules['loss_fn']
+    metrics_fn   = modules['metrics_fn'] 
     lr_scheduler = modules['lr_scheduler']
     train_loader = modules['train_loader']
     valid_loader = modules['valid_loader']
@@ -160,9 +178,12 @@ def train(model: Module,
     
     gw = GpuWatch(DEVICE_IDX)
     # prevalidation
-    vloss, _, _, _, _, Fscore = validate(model, valid_loader, loss_fn, False)
-    logger.info(f"Prevalidation: loss={vloss:.2f}, Fscore={Fscore:.2f} ")
-    mloss, recall, precision, tp_ratio, fp_ratio, Fscore = 0, 0, 0, 0, 0, 0
+    vloss, vmetrics = validate(model, valid_loader, loss_fn, metrics_fn, False)
+    logger.info(f"Prevalidation: loss={vloss:.2f}, Fscore={vmetrics["Fscore"]:.2f} ")
+    
+    #mloss, recall, precision, tp_ratio, fp_ratio, Fscore = 0, 0, 0, 0, 0, 0
+    mloss = 0
+    metrics = {}
     # main train loop: 1 iteration = 1 epoach 
     while (train_step<MAX_TRAIN_STEPS):
         ep+=1
@@ -172,23 +193,26 @@ def train(model: Module,
 
             seq, inp, y = b.seq, b.inp_struct, b.out_struct
             
-            #with torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16):
-            _, pred_m = model(seq, inp)
+            with torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16):
+                _, pred_m = model(seq, inp)
+    
+                loss = loss_fn(pred_m, inp, y)
+                mloss += loss.item()
 
-            loss = loss_fn(pred_m, inp, y)
-            _recall, _precision, _tp_ratio, _fp_ratio, _Fscore = AlinaMetrics(pred_m, y, inp)
-                
-            mloss += float(loss)
-            recall += _recall
-            precision += _precision
-            tp_ratio += _tp_ratio
-            fp_ratio += _fp_ratio
-            Fscore += _Fscore
+                loss = loss / grad_acum
+            
+            metrics_batch = metrics_fn(pred_m, inp, y)
+            
+            if len(metrics) == 0:
+                metrics = {k:v for k, v in metrics_batch.items()}
+            else:
+                for k, v in metrics_batch.items():
+                    metrics[k] += v
                     
-            scaler.scale(loss).backward() #calculate gradient
+            scaler.scale(loss).backward() # calculate gradient
 
             # training step
-            if (global_step + 1)%grad_acum==0:
+            if global_step % grad_acum == 0:
                 scaler.unscale_(optim)
                 torch.nn.utils.clip_grad_value_(model.parameters(), clip_value=CLIP_GRAD)
                 scaler.step(optim)
@@ -202,12 +226,11 @@ def train(model: Module,
                 train_step += 1
                 if train_step%LOG_EVERY==0:
                     
-                    log_fn('Loss', mloss, train_step)
-                    log_fn('recall', recall / grad_acum, train_step)
-                    log_fn('precision', precision / grad_acum, train_step)
-                    log_fn('preserved_tp_ratio', tp_ratio / grad_acum, train_step)
-                    log_fn('fixed_fp_ratio', fp_ratio / grad_acum, train_step)
-                    log_fn('Fscore', Fscore / grad_acum, train_step)
+                    log_fn('Loss', mloss / grad_acum, train_step)
+
+                    for k, v in metrics.items():
+                        log_fn(k, v / grad_acum, train_step)
+                        
                     log_fn('Lr', lr_scheduler.get_last_lr()[0], train_step)
                     log_fn('step/s', stepps, train_step)
 
@@ -217,17 +240,16 @@ def train(model: Module,
                     
                 if train_step%VALID_EVERY==0:
                     print(f"\rvalidation ...", end='')
-                    vloss, recall, precision, tp_ratio, fp_ratio, Fscore = validate(model, valid_loader, loss_fn, False)
+                    vloss, vmetrics = validate(model, valid_loader, loss_fn, metrics_fn, False)
                     log_fn('valid_Loss', float(vloss), train_step)
-                    log_fn('valid_recall', recall, train_step)
-                    log_fn('valid_precision', precision, train_step)
-                    log_fn('valid_preserved_tp_ratio', tp_ratio, train_step)
-                    log_fn('valid_fixed_fp_ratio', fp_ratio, train_step)
-                    log_fn('valid_Fscore', Fscore, train_step)
+
+                    for k, v in vmetrics.items():
+                        log_fn(f"valid_{k}", v, train_step)
                     
-                    checkpointer.save_by_metric(f"step={train_step}", Fscore)
-                    
-                mloss, recall, precision, tp_ratio, fp_ratio, Fscore = 0, 0, 0, 0, 0, 0
+                    checkpointer.save_by_metric(f"step={train_step}", vmetrics["Fscore"])
+                
+                metrics = {}
+                mloss = 0
 
             itps = 1/(time.time() - iter_start_time)
             iter_start_time = time.time()

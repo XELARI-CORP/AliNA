@@ -40,15 +40,15 @@ def main(
     config_path = Path(config_path)
     work_dir = Path(work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
-
-    logger.info("=== Start Training ===")
     
+    logger.info("=== Start Training ===")
+
     # 2. Parse Config File
     if not config_path.exists():
         logger.critical(f"Config file not found at {config_path}")
         return
         
-    logger.info(f"Load configuration from {config_path}...")
+    logger.info(f"Load configuration from {config_path}")
     with open(config_path, 'r') as f:
         config = json.load(f)
     config["model_name"]    = model_name
@@ -79,7 +79,7 @@ def main(
     )
     
     # 5. Setup Train Modules (DataLoaders, Schedulers, Loss)
-    logger.info("Configurate training modules and DataLoaders...")
+    logger.info("Configurate training modules and DataLoaders")
     modules = setup_train_modules(
         model=model,
         config=config,
@@ -97,7 +97,7 @@ def main(
 
     checkpointer = modules['checkpointer']
     try:
-        logger.info("Start train loop...")
+        logger.info("Start train loop")
         train(
             model=model,
             modules=modules,
