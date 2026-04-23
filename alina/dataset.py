@@ -189,21 +189,19 @@ class AlinaDataset:
         
         k = int(math.ceil(n * self.msa_sample_fraction))
         k = min(k, self.msa_sample_max_size)
-        
-        assert k <= n
-    
-        if k <= 1:
-            return msa[:1, :]
+        k = max(1, k)
 
+        
         if self._valid:
-            idxs = torch.arange(n-1, device=device) + 1 # 0...n-2 -> 1...n-1
+            idxs = torch.arange(k, device=device)
         else:
-            idxs = torch.randperm(n-1, device=device) + 1 # 1...(n-1)
-        idxs = idxs[:(k-1)]
+            if torch.rand(1).item() < 0.5:
+                first_idx = torch.tensor([0], device=device)
+                other_idxs = torch.randperm(n-1, device=device)[:k-1] + 1 
+                idxs = torch.cat([first_idx, other_idxs])
+            else:
+                idxs = torch.tensor([0], device=device)
 
-        first_ind = torch.tensor([0], device=device)
-        idxs = torch.cat([first_ind, idxs])
-        
         return msa[idxs,:]
         
 
