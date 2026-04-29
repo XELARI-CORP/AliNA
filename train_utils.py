@@ -63,7 +63,7 @@ def setup_train_modules(
     config: dict[str, Any],
     work_dir: Path | str,
     train_data: Dataset,
-    valid_data: Dataset,
+    valid_data: Dataset | dict[Dataset],
     optim: Optimizer):
     ### unpack config:
     lr_params    = config['lr_params']
@@ -78,9 +78,12 @@ def setup_train_modules(
     train_loader = DataLoader(train_data, batch_size=batch_size,
                               shuffle=True, drop_last=True,
                               collate_fn=collate_fn)
-    valid_loader = DataLoader(valid_data, batch_size=batch_size,
-                              shuffle=False, drop_last=False,
-                              collate_fn=collate_fn)
+    valid_loaders = {}
+    for label, ds in valid_data.items():
+        vloader = DataLoader(ds, batch_size=batch_size,
+                             shuffle=False, drop_last=False,
+                             collate_fn=collate_fn)
+        valid_loaders[label] = vloader
                                   
     lr_func   =  get_cexplr_scheduler(**lr_params)
         
@@ -91,15 +94,15 @@ def setup_train_modules(
     elif model_task == "p":
         loss_fn, metrics_fn = CELoss, PredMetrics
         
-    modules['optim']        = optim
-    modules['scaler']       = torch.amp.GradScaler("cuda")
-    modules['log_fn']       = mlflow.log_metric
-    modules['loss_fn']      = loss_fn
-    modules['metrics_fn']   = metrics_fn
-    modules['train_loader'] = train_loader
-    modules['valid_loader'] = valid_loader
-    modules["checkpointer"] = Checkpointer(work_dir / model_name, model, optim)
-    modules['lr_scheduler'] = LambdaLR(optim, lr_lambda=lr_func)
+    modules['optim']         = optim
+    modules['scaler']        = torch.amp.GradScaler("cuda")
+    modules['log_fn']        = mlflow.log_metric
+    modules['loss_fn']       = loss_fn
+    modules['metrics_fn']    = metrics_fn
+    modules['train_loader']  = train_loader
+    modules["checkpointer"]  = Checkpointer(work_dir / model_name, model, optim)
+    modules['lr_scheduler']  = LambdaLR(optim, lr_lambda=lr_func)
+    modules['valid_loaders'] = valid_loaders
 
     return modules 
 
@@ -150,15 +153,15 @@ def train(model: Module,
           verbose: bool | None = False):
         
     # unpack training modules
-    optim        = modules['optim']
-    scaler       = modules['scaler']
-    log_fn       = modules['log_fn']
-    loss_fn      = modules['loss_fn']
-    metrics_fn   = modules['metrics_fn'] 
-    lr_scheduler = modules['lr_scheduler']
-    train_loader = modules['train_loader']
-    valid_loader = modules['valid_loader']
-    checkpointer = modules["checkpointer"]
+    optim         = modules['optim']
+    scaler        = modules['scaler']
+    log_fn        = modules['log_fn']
+    loss_fn       = modules['loss_fn']
+    metrics_fn    = modules['metrics_fn'] 
+    lr_scheduler  = modules['lr_scheduler']
+    train_loader  = modules['train_loader']
+    checkpointer  = modules["checkpointer"]
+    valid_loaders = modules['valid_loaders']
     # unpack training parameters
     MAX_TRAIN_STEPS = train_const['MAX_TRAIN_STEPS']
     VALID_EVERY     = train_const['VALID_EVERY']
@@ -178,8 +181,9 @@ def train(model: Module,
     
     gw = GpuWatch(DEVICE_IDX)
     # prevalidation
-    vloss, vmetrics = validate(model, valid_loader, loss_fn, metrics_fn, False)
-    logger.info(f"Prevalidation: loss={vloss:.2f}, Fscore={vmetrics["Fscore"]:.2f} ")
+    for label, vloader in valid_loaders.items():
+        vloss, vmetrics = validate(model, vloader, loss_fn, metrics_fn, False)
+        logger.info(f"{label} preval.: loss={vloss:.2f}, Fscore={vmetrics["Fscore"]:.2f} ")
     
     #mloss, recall, precision, tp_ratio, fp_ratio, Fscore = 0, 0, 0, 0, 0, 0
     mloss = 0
@@ -196,10 +200,10 @@ def train(model: Module,
             with torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16):
                 _, pred_m = model(seq, inp)
     
-                loss = loss_fn(pred_m, inp, y)
-                mloss += loss.item()
+            loss = loss_fn(pred_m, inp, y)
+            mloss += loss.item()
 
-                loss = loss / grad_acum
+            loss = loss / grad_acum
             
             metrics_batch = metrics_fn(pred_m, inp, y)
             
@@ -240,13 +244,16 @@ def train(model: Module,
                     
                 if train_step%VALID_EVERY==0:
                     print(f"\rvalidation ...", end='')
-                    vloss, vmetrics = validate(model, valid_loader, loss_fn, metrics_fn, False)
-                    log_fn('valid_Loss', float(vloss), train_step)
+                    for label, vloader in valid_loaders.items():
+                        
+                        vloss, vmetrics = validate(model, vloader, loss_fn, metrics_fn, False)
+                        log_fn(f"{label}_valid_Loss", float(vloss), train_step)
 
-                    for k, v in vmetrics.items():
-                        log_fn(f"valid_{k}", v, train_step)
-                    
-                    checkpointer.save_by_metric(f"step={train_step}", vmetrics["Fscore"])
+                        for k, v in vmetrics.items():
+                            log_fn(f"{label}_valid_{k}", v, train_step)
+                            
+                        if label == "msa":
+                            checkpointer.save_by_metric(f"{label}_step{train_step}", vmetrics["Fscore"])
                 
                 metrics = {}
                 mloss = 0

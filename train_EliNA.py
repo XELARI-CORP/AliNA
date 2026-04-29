@@ -37,6 +37,8 @@ def main(
     Main entry point for training
     """
     # 1. Setup paths
+    valid_data_path = valid_data_path.split(":")
+    
     config_path = Path(config_path)
     work_dir = Path(work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -65,9 +67,16 @@ def main(
 
     # 3. Load Datasets
     logger.info("Initialize datasets...")
-    train_data = AlinaDataset.load(train_data_path)
-    valid_data = AlinaDataset.load(valid_data_path)
-    logger.success(f"Loaded {len(train_data)} train and {len(valid_data)} valid samples")
+    train_dataset = AlinaDataset.load(train_data_path)
+    
+    valid_data = {}
+    for label_path in valid_data_path:
+        label, path = label_path.split("|")
+        ds = AlinaDataset.load(path)
+        valid_data[label] = ds
+        
+    logger.success(f"Loaded train dataset ({len(train_dataset)}) and "
+                   f"{len(valid_data)} valid dataset(s) ({", ".join([str(len(ds)) for ds in valid_data.values()])})")
 
     # 4. Setup Model & Optimizer
     model, optim = setup_model_optimizer(
@@ -84,7 +93,7 @@ def main(
         model=model,
         config=config,
         work_dir=work_dir,
-        train_data=train_data,
+        train_data=train_dataset,
         valid_data=valid_data,
         optim=optim
     )
