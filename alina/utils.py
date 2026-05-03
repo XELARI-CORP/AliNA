@@ -114,14 +114,15 @@ def PredMetrics(pred_m, inp, y, TH=0.5):
     prec   = tp / ( (pred!=-1).float().sum() + 1e-7 )
 
     # remove accuracy - accuracy of correctly removed bonds
-    fmask = (inp!=-1) & (y==-1)  # fake bonds mask, present in inp AND not in target
-    racc = (eq & fmask).float().sum() / ( fmask.float().sum() + 1e-7 )
+    # fmask = (inp!=-1) & (y==-1)  # fake bonds mask, present in inp AND not in target
+    # racc = (eq & fmask).float().sum() / ( fmask.float().sum() + 1e-7 )
     
-    recall, prec, racc = float(recall), float(prec), float(racc)
+    # recall, prec, racc = float(recall), float(prec), float(racc)
+    recall, prec = float(recall), float(prec)
     
-    Fscore = 3*prec*recall*racc / (prec + recall + racc + 1e-7)
+    Fscore = 2*prec*recall / (prec + recall + 1e-7)
 
-    metrics = {"recall" : recall, "precision" : prec, "remove_accuracy" : racc, "Fscore" : Fscore}
+    metrics = {"recall" : recall, "precision" : prec, "Fscore" : Fscore}
 
     return metrics
 
