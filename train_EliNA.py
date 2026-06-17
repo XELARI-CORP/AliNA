@@ -25,6 +25,10 @@ np.random.seed(SEED)
 torch.manual_seed(SEED)
 torch.cuda.manual_seed(SEED)
 
+logger.remove()
+fmt = "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | <level>{message}</level>"
+logger.add(sys.stderr, format=fmt)
+
 @logger.catch
 def main(
     train_data_path: str,

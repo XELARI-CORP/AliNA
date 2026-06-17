@@ -25,21 +25,31 @@ def setup_model_optimizer(
     compile_model: bool = False):
 
     weight_decay = config["const"]["WEIGHT_DECAY"]
+    freeze_layers  = config["freeze_layers"] 
     
     if checkpoint:
         logger.info(f"Load checkpoint: {str(checkpoint)}")
         # load model
-        model = model_class.load(checkpoint).to(device)
+        model = model_class.load(path=checkpoint).to(device)
+        if freeze_layers:
+            freezed_layers = []
+            for param_name, param in model.named_parameters():
+                if any(layer_name in param_name for layer_name in freeze_layers):
+                    param.requires_grad = False
+                    freezed_layers.append(param_name)
+                else:
+                    param.requires_grad = True
+            logger.info(f"Freezed layers: {freezed_layers}")
 
         logger.info("Update optimizer state")
         state = torch.load(checkpoint, map_location=device, weights_only=False)
         optim = torch.optim.AdamW(model.parameters(), weight_decay=weight_decay, lr=1)
         optim.load_state_dict(state["optim_state_dict"])
 
-        for state in optim.state.values():
-            for k, v in state.items():
-                if isinstance(v, torch.Tensor):
-                    state[k] = v.to(device)
+        # for state in optim.state.values():
+        #     for k, v in state.items():
+        #         if isinstance(v, torch.Tensor):
+        #             state[k] = v.to(device)
                     
         for param_group in optim.param_groups:
             param_group['weight_decay'] = weight_decay
