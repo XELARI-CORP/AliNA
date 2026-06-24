@@ -15,6 +15,7 @@ class Model(nn.Module):
                  struct_encoders_order: int | List[int],
                  heads: int,
                  convdrop: float,
+                 encdrop: float,
                  conv_activation,
                  norm_layer
                 ):
@@ -47,12 +48,12 @@ class Model(nn.Module):
         
         # MSA Transformer Block
         self.seq_encoders_block, self.seq_encoders_order = make_encoder_block(
-            seq_encoders_order, dim, heads, 0.1,
+            seq_encoders_order, dim, heads, encdrop,
             MSATransformer, norm_layer)
         
         # Encoder Block
         self.struct_encoders_block, self.struct_encoders_order = make_encoder_block(
-            struct_encoders_order, dim, heads, 0.1,
+            struct_encoders_order, dim, heads, encdrop,
             EncoderLayer, norm_layer)
         
         # Head
