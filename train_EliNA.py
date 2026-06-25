@@ -2,14 +2,16 @@ import sys
 sys.path.append('/usr/local/lib/python3.12/dist-packages')
 sys.path.append('/home/pavel/repos/AliNA')
 
-import json
-import fire
+# import json
+# import fire
 import torch
 import random
 import mlflow
 import numpy as np
 from pathlib import Path
 from loguru import logger
+import hydra
+from omegaconf import DictConfig, OmegaConf
 
 from alina import AliNA
 from alina.dataset import AlinaDataset
@@ -29,37 +31,25 @@ logger.remove()
 fmt = "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | <level>{message}</level>"
 logger.add(sys.stderr, format=fmt)
 
+@hydra.main(version_base=None, config_path="configs", config_name="config")
 @logger.catch
-def main(
-    train_data_path: str,
-    valid_data_path: str,
-    config_path: str,
-    work_dir: str,
-    model_name: str,
-    checkpoint_path: str | None = None):
+def main(cfg: DictConfig):
     """
     Main entry point for training
     """
+    config = OmegaConf.to_container(cfg, resolve=True)
     # 1. Setup paths
-    valid_data_path = valid_data_path.split(":")
+    train_data_path = config["data"]["train_data_path"]
+    valid_data_path = config["data"]["valid_data_path"].split(":")
+    checkpoint_path = config["checkpoint_path"]
     
-    config_path = Path(config_path)
-    work_dir = Path(work_dir)
+    work_dir        = Path(config["work_dir"])
+    
     work_dir.mkdir(parents=True, exist_ok=True)
     
     logger.info("=== Start Training ===")
-
-    # 2. Parse Config File
-    if not config_path.exists():
-        logger.critical(f"Config file not found at {config_path}")
-        return
-        
-    logger.info(f"Load configuration from {config_path}")
-    with open(config_path, 'r') as f:
-        config = json.load(f)
-    config["model_name"]    = model_name
-    config["train_dataset"] = train_data_path
-    config["valid_dataset"] = valid_data_path
+    model_name = config["model_name"]
+    
     config["hparams"]["conv_activation"] = torch.nn.SiLU
     config["hparams"]["norm_layer"]      = torch.nn.LayerNorm
 
@@ -135,5 +125,4 @@ def main(
         logger.info("MLflow session closed")
 
 if __name__ == '__main__':
-    # Fire exposes the main function to the command line automatically
-    fire.Fire(main)
+    main()
