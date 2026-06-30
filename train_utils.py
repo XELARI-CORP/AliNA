@@ -15,6 +15,8 @@ from typing import Any
 
 from alina.utils import ClasMetrics, PredMetrics, MaskedCELoss, CELoss, get_cexplr_scheduler, Checkpointer, GpuWatch
 from alina.dataset import AlinaDataset, collate_fn
+import warnings
+warnings.simplefilter(action='ignore', category=FutureWarning)
 
 ### FUNCTIONS ###
 def setup_model_optimizer(
@@ -158,10 +160,11 @@ def validate(model: Module,
 @logger.catch
 def train(model: Module,
           modules: dict[str, Any],
-          train_const:  dict[str, Any],
+          config:  dict[str, Any],
           device: torch.device | str = 'cpu',
           verbose: bool | None = False):
-        
+
+    train_const = config.get('const', {})
     # unpack training modules
     optim         = modules['optim']
     scaler        = modules['scaler']
@@ -180,7 +183,11 @@ def train(model: Module,
     DEVICE_IDX      = train_const['DEVICE_IDX']
     BATCH_SIZE      = train_const['BATCH_SIZE']
     grad_acum       = train_const['GRAD_ACUM']
-    
+
+
+    save_by = config["save_by"]
+    vds_keys = list(valid_loaders.keys())
+    assert save_by in vds_keys, f"v.loaders: {vds_keys}, but got save_by = {save_by}"
     # counters
     global_step = 0
     train_step = 0
@@ -262,7 +269,7 @@ def train(model: Module,
                         for k, v in vmetrics.items():
                             log_fn(f"{label}_valid_{k}", v, train_step)
                             
-                        if label == "msa":
+                        if label == save_by:
                             checkpointer.save_by_metric(f"{label}_step{train_step}", vmetrics["Fscore"])
                 
                 metrics = {}
@@ -279,3 +286,12 @@ def train(model: Module,
                 
     checkpointer(f"finished")
     print()
+
+def clean_string(s: str) -> str:
+    mapper = str.maketrans({"[":"",
+                            "]":"",
+                            " ":"",
+                            ",":""
+                           })
+
+    return s.translate(mapper)

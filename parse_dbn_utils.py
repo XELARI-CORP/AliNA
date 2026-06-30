@@ -237,7 +237,7 @@ def process_seq(na: nsk.NA, valid_nucleotides: Set[str],
     msa_data = [] # will be populated from meta if 'msa' key exists
     msa_contains_target = False
     
-    aligned_target_seq = na.seq.upper().translate(mapper) # presume there are might be '-'
+    aligned_target_seq = na.seq.upper().translate(mapper) # presume it may contain '-'
     clean_target_seq = aligned_target_seq.replace("-", "") # default assumption
 
     if 'msa' in na.meta.keys():
@@ -254,11 +254,11 @@ def process_seq(na: nsk.NA, valid_nucleotides: Set[str],
             skip = (not msa_contains_target) and (len(aligned_target_seq) != len(msa_data[0]))
     
     if not skip:
-        # Deduplicate and filter
-        msa_data = deduplicate_keep_order_msa([aligned_target_seq] + msa_data)
+        msa_data = [aligned_target_seq] + msa_data
         msa_data = [seq.upper().translate(mapper).replace('-', 'N') for seq in msa_data]
         msa_data = [seq for seq in msa_data if validate_sequence(seq, valid_nucleotides)]
-    
+        msa_data = deduplicate_keep_order_msa(msa_data)
+
     return msa_data, aligned_target_seq, skip
 
 

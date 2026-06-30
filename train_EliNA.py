@@ -15,11 +15,16 @@ from omegaconf import DictConfig, OmegaConf
 
 from alina import AliNA
 from alina.dataset import AlinaDataset
+import warnings
 
 from train_utils import (
+    clean_string,
     setup_model_optimizer,
     setup_train_modules,
     train )
+
+# Suppress FutureWarnings
+warnings.simplefilter(action='ignore', category=FutureWarning)
 
 SEED=42
 random.seed(SEED)
@@ -49,13 +54,15 @@ def main(cfg: DictConfig):
     
     logger.info("=== Start Training ===")
     model_name = config["model_name"]
+    model_name = clean_string(model_name)
+    config["model_name"] = model_name
     
     config["hparams"]["conv_activation"] = torch.nn.SiLU
     config["hparams"]["norm_layer"]      = torch.nn.LayerNorm
 
     # Determine device (using the IDX from your config if available)
-    train_const = config.get('const', {})
-    device_idx = train_const.get('DEVICE_IDX', 0)
+    #train_const = config.get('const', {})
+    device_idx = config.get('const', {}).get('DEVICE_IDX', 0) #!!!
     device = torch.device(f'cuda:{device_idx}' if torch.cuda.is_available() else 'cpu')
     logger.info(f"Use device: {device}")
 
@@ -104,7 +111,7 @@ def main(cfg: DictConfig):
         train(
             model=model,
             modules=modules,
-            train_const=train_const,
+            config=config,
             device=device,
             verbose=True
         )
