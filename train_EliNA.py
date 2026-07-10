@@ -26,24 +26,28 @@ from train_utils import (
 # Suppress FutureWarnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
-SEED=42
-random.seed(SEED)
-np.random.seed(SEED)
-torch.manual_seed(SEED)
-torch.cuda.manual_seed(SEED)
+def set_seed(SEED: int) -> None:
+    random.seed(SEED)
+    np.random.seed(SEED)
+    torch.manual_seed(SEED)
+    torch.cuda.manual_seed(SEED)
+
 
 logger.remove()
 fmt = "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | <level>{message}</level>"
 logger.add(sys.stderr, format=fmt)
 
-@hydra.main(version_base=None, config_path="configs", config_name="config")
+@hydra.main(version_base=None, config_path="configs", config_name="elina")
 @logger.catch
 def main(cfg: DictConfig):
     """
     Main entry point for training
     """
     config = OmegaConf.to_container(cfg, resolve=True)
+    SEED = config["random_seed"]
+    set_seed(SEED)
     # 1. Setup paths
+    
     train_data_path = config["data"]["train_data_path"]
     valid_data_path = config["data"]["valid_data_path"].split(":")
     checkpoint_path = config["checkpoint_path"]
@@ -53,9 +57,9 @@ def main(cfg: DictConfig):
     work_dir.mkdir(parents=True, exist_ok=True)
     
     logger.info("=== Start Training ===")
-    model_name = config["model_name"]
-    model_name = clean_string(model_name)
-    config["model_name"] = model_name
+    run_name = f"{cfg.run_name_prefix}_{cfg.run_name_template.template}"
+    run_name = clean_string(run_name)
+    config["run_name"] = run_name
     
     config["hparams"]["conv_activation"] = torch.nn.SiLU
     config["hparams"]["norm_layer"]      = torch.nn.LayerNorm
@@ -84,9 +88,7 @@ def main(cfg: DictConfig):
         model_class=AliNA, 
         config=config,
         checkpoint=checkpoint_path,
-        device=device,
-        compile_model=config.get("compile_model", False)
-    )
+        device=device)
     
     # 5. Setup Train Modules (DataLoaders, Schedulers, Loss)
     logger.info("Configurate training modules and DataLoaders")
@@ -102,7 +104,7 @@ def main(cfg: DictConfig):
     # 6. Run Training
     mlflow.set_tracking_uri(uri="http://127.0.0.1:31420") 
     mlflow.set_experiment(config.get("experiment_name", "AliNA"))
-    mlflow.start_run(run_name=model_name)
+    mlflow.start_run(run_name=run_name)
     mlflow.log_params(config)
 
     checkpointer = modules['checkpointer']

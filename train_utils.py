@@ -23,11 +23,12 @@ def setup_model_optimizer(
     model_class: type[Module],
     config: dict[str, Any],
     checkpoint: Path | str | None = None,
-    device: torch.device | str = 'cpu',
-    compile_model: bool = False):
+    device: torch.device | str = 'cpu'):
 
     weight_decay = config["const"]["WEIGHT_DECAY"]
-    freeze_layers  = config["freeze_layers"] 
+    freeze_layers  = config["special_params"]["freeze_layers"] 
+
+    compile_model = config["special_params"]["compile_model"]
     
     if checkpoint:
         logger.info(f"Load checkpoint: {str(checkpoint)}")
@@ -80,8 +81,8 @@ def setup_train_modules(
     ### unpack config:
     lr_params    = config['lr_params']
     batch_size   = config['const']['BATCH_SIZE']
-    model_name   = config['model_name']
-    model_task   = config['model_task']
+    model_name   = config['run_name']
+    model_task   = config['special_params']['model_task']
     
     assert model_task in ["p","c"], f"unknown model task: expected 'p' or 'c', got {model_task}"
     
@@ -185,7 +186,7 @@ def train(model: Module,
     grad_acum       = train_const['GRAD_ACUM']
 
 
-    save_by = config["save_by"]
+    save_by = config["special_params"]["save_by"]
     vds_keys = list(valid_loaders.keys())
     assert save_by in vds_keys, f"v.loaders: {vds_keys}, but got save_by = {save_by}"
     # counters
