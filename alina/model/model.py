@@ -16,8 +16,9 @@ class Model(nn.Module):
                  heads: int,
                  convdrop: float,
                  encdrop: float,
-                 conv_activation,
-                 norm_layer
+                 conv_activation: nn.Module,
+                 norm_layer: nn.Module,
+                 skip_msa_att: bool
                 ):
         super().__init__()
         
@@ -49,7 +50,7 @@ class Model(nn.Module):
         # MSA Transformer Block
         self.seq_encoders_block, self.seq_encoders_order = make_encoder_block(
             seq_encoders_order, dim, heads, encdrop,
-            MSATransformer, norm_layer)
+            MSATransformer, norm_layer, skip_msa_att)
         
         # Encoder Block
         self.struct_encoders_block, self.struct_encoders_order = make_encoder_block(
@@ -114,14 +115,14 @@ class Model(nn.Module):
 
         x = self.final_norm(x)
         x = torch.matmul(
-            torch.matmul(x, self.DotW), # @ dim,dim -> b, seq, dim
-            torch.transpose(x, 1, 2) # @ b, dim, seq -> b, seq, seq
-        )
+            torch.matmul(x, self.DotW), # b,seq+1,dim @ dim,dim -> b,seq+1,dim
+            torch.transpose(x, 1, 2) # b,seq+1,dim -> b,dim,seq+1
+        ) # b,seq+1,dim @ b,dim,seq+1 -> b, seq+1, seq+1
         x = x / self.final_dot_norm
         x = x + self.final_bias
         x = x - 1e7 * torch.eye(x.size(1), dtype=x.dtype, device=x.device).unsqueeze(0)
 
-        nbn, m = x[:, 0], x[:, 1:] # b, seq | b, seq-1, seq
+        nbn, m = x[:,0], x[:,1:] # b, seq+1 | b, seq, seq+1
         nbn = torch.sigmoid(nbn)
         m = torch.nn.functional.softmax(m, dim=-1)
         
