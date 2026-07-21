@@ -133,10 +133,13 @@ class AlinaDataset:
             
             if "msa" in na.meta.keys():
                 for seq in na.meta["msa"]:
-                    if seq not in seqs_set:
-                        assert len(seq)==seq_len, f"Sequence length mismatch: {len(seq)} != {seq_len}"
+                    if (seq not in seqs_set) and (len(seq)==seq_len):
+                        #assert len(seq)==seq_len, f"Sequence length mismatch: {len(seq)} != {seq_len}"
                         seqs_set.add(seq)
                         seqs_list.append(seq)
+                        
+                # assert len(seqs_list)<=1, "empty or invalid MSA"
+                
             msa_len = len(seqs_list)
             seq_tensor = torch.zeros((msa_len, seq_len), dtype=torch.int32)
             
