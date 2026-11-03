@@ -1,7 +1,7 @@
 import sys
-sys.path.append('/usr/local/lib/python3.12/dist-packages')
+sys.path.append('/home/pavel/conda/miniconda3/envs/AliNA/lib/python3.12/site-packages')
 sys.path.append('/home/pavel/repos/AliNA')
-
+print(sys.path)
 # import json
 # import fire
 import signal

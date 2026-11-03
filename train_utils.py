@@ -355,7 +355,7 @@ def train(model: Module,
                     print(f"\rvalidation ...", end='')
                     for label, vloader in valid_loaders.items():
                         
-                        vloss, vmetrics = validate_fn(model, vloader, loss_fn, metrics_fn, False, model_task)
+                        vloss, vmetrics = validate_fn(model, vloader, loss_fn, metrics_fn, False)
                         log_fn(f"{label}_valid_Loss", float(vloss), train_step)
 
                         for k, v in vmetrics.items():
