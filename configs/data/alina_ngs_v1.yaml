@@ -1,0 +1,2 @@
+train_data_path: "/mnt/HDD36/pavel/ALINA/alina/v2_07_2026/cached/pretrain_mfe/train_ngs_v1.pkl"
+valid_data_path: "/mnt/HDD36/pavel/ALINA/alina/v2_07_2026/cached/pretrain_mfe/valid_ngs_v1.pkl"

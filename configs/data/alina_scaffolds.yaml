@@ -1,0 +1,4 @@
+train_data_path: "/mnt/HDD36/pavel/ALINA/alina/v2_07_2026/cached/pretrain_scaffolds/train_rna_dna.pkl"
+valid_data_paths:
+    rna: "/mnt/HDD36/pavel/ALINA/alina/v2_07_2026/cached/pretrain_scaffolds/valid_rna.pkl"
+    dna: "/mnt/HDD36/pavel/ALINA/alina/v2_07_2026/cached/pretrain_scaffolds/valid_dna.pkl"

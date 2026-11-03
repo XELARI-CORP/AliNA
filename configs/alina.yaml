@@ -1,0 +1,14 @@
+defaults:
+  - data: alina_ngs_v1
+  - hparams: alina_default
+  - const: alina_default
+  - lr_params: alina_default
+  - run_name_template: alina_default
+  - special_params: alina_default
+  - _self_
+
+run_name_prefix: "alina"
+work_dir: "/home/pavel/repos/AliNA/dev/experiments/alina"
+checkpoint_path : null
+experiment_name : "Alina_new_data"
+random_seed: 42

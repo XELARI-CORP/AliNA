@@ -1,0 +1,7 @@
+vocab: 26
+emb: 16
+dim: 192
+layers: 3
+heads: 8
+channels: [24, 48, 96, 192]
+convdrop: 0.1

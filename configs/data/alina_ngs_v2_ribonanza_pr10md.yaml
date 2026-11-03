@@ -1,0 +1,2 @@
+train_data_path: "/mnt/HDD36/pavel/ALINA/alina/v2_07_2026/cached/tune_with_md/train_ngs_v2_ribonanza.pkl"
+valid_data_path: "/mnt/HDD36/pavel/ALINA/alina/v2_07_2026/cached/tune_with_md/validation_ngs_v2_ribonanza.pkl"

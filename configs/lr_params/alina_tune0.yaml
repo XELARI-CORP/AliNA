@@ -1,0 +1,6 @@
+warmup: 400
+peak: 9e-05
+c: 0.0015
+min_lr: 3e-05
+max_lr: 0.001
+rules: []

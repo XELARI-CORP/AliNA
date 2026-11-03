@@ -1,0 +1,4 @@
+MAX_LEN: 256
+DIMER_EMBED: False
+CENTER_PAD: False
+LOSS: "BCE"

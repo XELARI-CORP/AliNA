@@ -1,0 +1,1 @@
+template: "wd${const.WEIGHT_DECAY}_drop${hparams.convdrop}"

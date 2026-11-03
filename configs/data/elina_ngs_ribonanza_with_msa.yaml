@@ -1,0 +1,2 @@
+train_data_path: "/mnt/HDD36/pavel/ALINA/alina_and_elina_Ribonanza_NGS_data_06_2026/cached_elina/train_wout_input_msa64_Ribonanza_best_median_with_msa_cached.pkl"
+valid_data_path: "_|/mnt/HDD36/pavel/ALINA/alina_and_elina_Ribonanza_NGS_data_06_2026/cached_elina/valid_wout_input_msa1_cached.pkl:msa|/mnt/HDD36/pavel/ALINA/alina_and_elina_Ribonanza_NGS_data_06_2026/cached_elina/valid_wout_input_msa64_cached.pkl"

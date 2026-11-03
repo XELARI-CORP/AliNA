@@ -1,0 +1,1 @@
+template: "struct${hparams.struct_encoders_order}_wd${const.WEIGHT_DECAY}_drop${hparams.encdrop}"

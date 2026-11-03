@@ -1,133 +1,127 @@
+from typing import List
+import math
 import torch
 import torch.nn as nn
-from torch.nn import functional as F
 
-from .modules import pos_enc, ConvLayerNorm, ConvBlock, MHAttention, EncoderLayer
+from .modules import EncoderLayer, MSATransformer, make_encoder_block
 
 
 class Model(nn.Module):
-    def __init__(self, 
-                 vocab: int, 
-                 emb: int, 
-                 dim: int, 
-                 layers: int, 
-                 heads: int, 
-                 channels: int, 
-                 convdrop: float
+    def __init__(self,
+                 vocab_size: int,
+                 dim: int,
+                 conv_layers: int,
+                 seq_encoders_order: int | List[int],
+                 struct_encoders_order: int | List[int],
+                 heads: int,
+                 convdrop: float,
+                 encdrop: float,
+                 conv_activation: nn.Module,
+                 norm_layer: nn.Module,
+                 skip_msa_att: bool
                 ):
         super().__init__()
-        
-        self.embedding = nn.Embedding(vocab, emb)
-        
-        # ENCODER
-        self.pool = nn.MaxPool2d(2, stride=2)
-        self.EncCVBlock1 = ConvBlock(emb, channels[0], convdrop)
-        self.EncCVBlock2 = ConvBlock(channels[0], channels[1], convdrop)
-        self.EncCVBlock3 = ConvBlock(channels[1], channels[2], convdrop)
-        self.EncCVBlock4 = ConvBlock(channels[2], channels[3], convdrop)
-        
-        # MIDDLE
-        self.postpool = nn.Linear(channels[3], dim)
-        torch.nn.init.xavier_uniform_(self.postpool.weight, gain=1.0)
-        
-        self.PE = torch.nn.parameter.Parameter(pos_enc(seq=256, dim=dim), requires_grad=False)
-        self.encoders_list = nn.ModuleList()
-        for i in range(layers):
-            self.encoders_list.append(EncoderLayer(dim=dim, heads=heads, do=0.1))
 
-        # DECODER
-        self.upsample = nn.Upsample(scale_factor=2, mode='bilinear')
-        self.DecCVBlock1 = ConvBlock((dim+channels[3]), channels[-1], convdrop)
-        self.DecCVBlock2 = ConvBlock(channels[-2]+channels[-1], channels[-2], convdrop)
-        self.DecCVBlock3 = ConvBlock(channels[-3]+channels[-2], channels[-3], convdrop)
-        self.DecCVBlock4 = ConvBlock(channels[-4]+channels[-3], channels[-4], convdrop)
-        
-        # OUT    
-        self.out = nn.Conv2d(channels[-4], 1, kernel_size=(1,1), stride=1, padding='valid')
-        torch.nn.init.xavier_uniform_(self.out.weight, gain=1.0)
-        
-        
-    def get_pad_mask(self, x):
-        x = x.view(-1, 16, 16, 256)
-        x = torch.permute(x, (0, 1, 3, 2)).contiguous() # b, Hpatch, patch_dim, W -> b, Hpatch, W, patch_dim
-        x = x.view(-1, 16**2, 16**2) # b, Hpatch, W, patch_dim -> b, Hpatch*Wpatch, patch_dim*patch_dim
-        
-        x = torch.sum(x, dim=-1, keepdim=False) # b, Hpatch*Wpatch
-        return (x==0.).float()
-        
-            
-    def forward(self, x):
-        mask = self.get_pad_mask(x) # b, seq, seq
-        att_mask = torch.unsqueeze(torch.unsqueeze(mask, 1), 1) # b, seq(1), heads(1), seq
-        
-        # EMB
-        x = self.embedding(x) # b, 256H, 256W, emb
-        x = torch.permute(x, (0, 3, 1, 2)).contiguous() # b, dim, 256H, 256W
-        
-        # ENCODER
-        x1 = self.EncCVBlock1(x) # b, 16, 256, 256 -> b, 32, 256, 256
-        x = self.pool(x1) # b, 32, 256, 256 -> b, 32, 128, 128
+        self.dim = dim
 
-        x2 = self.EncCVBlock2(x) # b, 32, 128, 128 -> b, 64, 128, 128
-        x = self.pool(x2) # b, 64, 128, 128 -> b, 64, 64, 64
+        # Embedding
+        self.embedding = nn.Embedding(vocab_size, dim)
 
-        x3 = self.EncCVBlock3(x) # b, 64, 64, 64 -> b, 128, 64, 64
-        x = self.pool(x3) # b, 128, 64, 64 -> b, 128, 32, 32
+        # Conv Block
+        self.conv_model = nn.Sequential()
+        for i in range(conv_layers):
+            if i>0:
+                self.conv_model.append(nn.Dropout(convdrop))
 
-        x4 = self.EncCVBlock4(x) # b, 128, 32, 32 -> b, 256, 32, 32
-        x = self.pool(x4) # b, 256, 32, 32 -> b, 256, 16, 16
-        
-        # MIDDLE
-        x = torch.permute(x, (0, 2, 3, 1)).contiguous() # b, dim, 16, 16 -> b, 16, 16, dim
-        x = x.view(-1, 256, x.shape[-1]) # b, 16, 16, dim -> b, seq(256), dim
-        x = self.postpool(x)
-        x += self.PE
-        
-        for l in self.encoders_list:
-            x = l([x, x, x, att_mask])
-            
-        x = x.view(-1, 16, 16, x.shape[-1])
-        x = torch.permute(x, (0, 3, 1, 2)).contiguous() # b, H, W, dim -> b, dim, H, W
-            
-        # DECODER
-        x = self.upsample(x) # b, 256, 16, 16 -> # b, 256, 32, 32
-        x = torch.cat((x, x4), 1) # b, 256, 32, 32 + b, 256, 32, 32 -> b, 512, 32, 32
-        x = self.DecCVBlock1(x) # b, 512, 32, 32 -> b, 256, 32, 32
+            layer = nn.Conv1d(dim, dim, kernel_size=3, stride=1, padding="same")
+            if (i+1)<conv_layers:
+                torch.nn.init.kaiming_uniform_(layer.weight, nonlinearity='relu')
+                self.conv_model.append(layer)
+                self.conv_model.append(conv_activation())
+            else:
+                torch.nn.init.xavier_uniform_(layer.weight, gain=1.0)
+                self.conv_model.append(layer)
 
-        x = self.upsample(x) # b, 256, 32, 32 -> b, 256, 64, 64
-        x = torch.cat((x, x3), 1) # b, 256, 64, 64 + b, 128, 64, 64 -> b, 384, 64, 64
-        x = self.DecCVBlock2(x) # b, 384, 64, 64 -> b, 128, 64, 64
+        # Sequence Transformer Block (MSA layers, used with a single-row "MSA")
+        self.seq_encoders_block, self.seq_encoders_order = make_encoder_block(
+            seq_encoders_order, dim, heads, encdrop,
+            MSATransformer, norm_layer, skip_msa_att)
 
-        x = self.upsample(x) # b, 128, 64, 64 -> b, 128, 128, 128
-        x = torch.cat((x, x2), 1) # b, 128, 128, 128 + b, 64, 128, 128 -> b, 192, 128, 128
-        x = self.DecCVBlock3(x) # b, 192, 128, 128 -> b, 64, 128, 128
+        # Encoder Block
+        self.struct_encoders_block, self.struct_encoders_order = make_encoder_block(
+            struct_encoders_order, dim, heads, encdrop,
+            EncoderLayer, norm_layer)
 
-        x = self.upsample(x) # b, 64, 128, 128 -> b, 64, 256, 256
-        x = torch.cat((x, x1), 1) # b, 64, 256, 256 + b, 32, 256, 256 -> b, 96, 256, 256
-        x = self.DecCVBlock4(x) # b, 96, 256, 256 -> b, 32, 256, 256
-        
-        # HEAD
-        x = self.out(x)
-        x = x.squeeze(1) # b, 32, 256, 256 -> b, 256, 256
-        x = torch.sigmoid(x)
-        
-        return x
+        # Head: per-nucleotide reactivity logit
+        self.final_norm = norm_layer(dim)
+        self.head = nn.Linear(dim, 1)
+        torch.nn.init.xavier_uniform_(self.head.weight, gain=1.0)
+        torch.nn.init.constant_(self.head.bias, 0.0)
+
+    @staticmethod
+    def to_prediction(raw: torch.Tensor) -> torch.Tensor:
+        """
+        Raw head output -> reactivity prediction: reactivity is non-negative, so negative outputs are clipped to 0
+        (no upper bound: reactivity is not bounded by 1). Not used in the loss: clamp has zero gradient below 0.
+        """
+        return raw.float().clamp(min=0.0)
 
 
+    @torch.compile
+    def pos_enc(self, seq: int, dim: int, start_idx: int, device: torch.device):
+        div = torch.arange(dim, dtype=torch.float32, device=device)
+        div = 10000**(2 * (div//2) / dim)
+
+        pos_enc = torch.arange(start_idx, seq+start_idx, dtype=torch.float32, device=device) # 1,...,seq if start_idx=1
+        pos_enc = pos_enc.view(seq, 1).repeat(1, dim) / div
+
+        pos_enc[:, 0::2] = torch.sin(pos_enc[:, 0::2]) # dim 2i
+        pos_enc[:, 1::2] = torch.cos(pos_enc[:, 1::2]) # dim 2i+1
+
+        return pos_enc
 
 
+    def forward(self, seq: torch.Tensor, raw: bool = False):
+        """
+        Args:
+            seq: (b, L) int tokens, 0 = pad
+            raw: return the raw (unclipped) head output, which is what the loss is computed on
+        Returns:
+            (b, L) reactivity prediction clipped to >= 0 (or the raw head output)
+        """
+        # assert seq.dim() == 2, f"expected seq of shape (b, L), got {tuple(seq.shape)}"
+        batch, seq_len = seq.shape
 
+        # pad positions are zeroed at every conv input, otherwise the k=3 convs leak
+        # pad embeddings into the last real nucleotides and outputs depend on batch padding
+        pad = (seq!=0).unsqueeze(1) # b, 1, seq
+        x = self.embedding(seq).transpose(1,2) # b, dim, seq
+        x = x * pad.to(x.dtype)
+        for layer in self.conv_model:
+            x = layer(x)
+            x = x * pad.to(x.dtype)
+        x = x.transpose(1,2) # b, seq, dim
 
+        seq_mask = (seq==0).to(x.dtype).view(batch, 1, 1, seq_len) # b, seq -> b, 1, 1, seq
 
+        # seq encoders work on (b, msa, seq, dim); here msa = 1
+        x = x.unsqueeze(1) # b, 1, seq, dim
+        msa_mask = torch.zeros((batch * seq_len, 1, 1, 1), dtype=x.dtype, device=x.device)
+        for li in self.seq_encoders_order:
+            l = self.seq_encoders_block[li]
+            x = l(x, msa_mask, seq_mask)
 
+        x = x[:,0,:,:]   # batch, 1, seq, dim -> batch, seq, dim
+        x = x + self.pos_enc(x.size(1), x.size(2), start_idx=1, device=x.device).to(x.dtype)
 
+        # encoders
+        for li in self.struct_encoders_order:
+            l = self.struct_encoders_block[li]
+            x, _ = l(x, seq_mask) # b, seq, dim
 
+        x = self.final_norm(x)
+        out = self.head(x).squeeze(-1) # b, seq, dim -> b, seq
 
-
-
-
-
-
-
-
-        
+        if raw:
+            return out
+        return self.to_prediction(out)
