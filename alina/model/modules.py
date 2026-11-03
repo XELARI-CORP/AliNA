@@ -7,23 +7,25 @@ def make_encoder_block(layers_order: int | List[int],
                        dim: int,
                        heads: int,
                        do: float,
-                       encoder_layer,
-                       norm_layer):
-    
+                       encoder_layer: nn.Module,
+                       norm_layer: nn.Module,
+                       skip_msa_att: bool = False):
+            
         if isinstance(layers_order, int):
             layers_order = list(range(1, layers_order+1))
 
         assert 0 not in layers_order, "Layer indices must start from 1, not 0"
         assert set(layers_order) == set(range(1, 1+max(layers_order))), "All layers must be used"
 
-        transformers_list = nn.ModuleList()
+        encoders_list = nn.ModuleList()
         for _ in range(max(layers_order)):
-            transformers_list.append(encoder_layer(dim=dim, heads=heads, do=do,
-                                                   norm_layer=norm_layer))
+            encoders_list.append(encoder_layer(dim=dim, heads=heads, do=do,
+                                               norm_layer=norm_layer,
+                                               skip_att=skip_msa_att))
 
         layers_order = [i-1 for i in layers_order]
 
-        return transformers_list, layers_order
+        return encoders_list, layers_order
         
 class ComplementaryLayer(nn.Module):
     def __init__(self, dim: int):
@@ -163,6 +165,13 @@ class MHAttention(nn.Module):
         att = self.O(att)
         
         return att, g
+
+class FakeMHAttention(nn.Module):
+    def __init__(self):
+        super().__init__()
+    def forward(self, x, mask):
+        x = x.permute(0, 2, 1, 3).contiguous() # return dims back
+        return x
     
 class FFSwiglu(nn.Module):
     def __init__(self, dim: int, do: float):
@@ -192,47 +201,54 @@ class FFSwiglu(nn.Module):
         return x
 
 class MSATransformer(nn.Module):
-    def __init__(self, dim: int, heads: int, do: float, norm_layer):
+    def __init__(self, dim: int, heads: int, do: float,
+                 norm_layer: nn.Module, skip_att: bool):
         super().__init__()
-        self.dim = dim
-        self.heads = heads
 
-        self.SeqAtt = MHAttention(dim, heads, True)
-        self.MSAAtt = MHAttention(dim, heads, False)
-        self.drop = nn.Dropout(do)
-
-        self.norm_layers = nn.ModuleList([norm_layer(dim) for _ in range(3)])
-
+        self.SeqAttBlock = MHAttentionBlock(dim, heads, do,
+                                            norm_layer, use_rope=True)
+        self.MSAAttBlock = MHAttentionBlock(dim, heads, do,
+                                            norm_layer, use_rope=False) \
+                            if not skip_att else FakeMHAttention()
+        
+        self.ff_norm_layer = norm_layer(dim)
         self.FF = FFSwiglu(dim, do)
 
     def forward(self, x, msa_mask, seq_mask):
         # x.shape: b(0), msa(1), seq(2), dim(3)
         # seq-wise att
-        att = self.norm_layers[0](x)
-        att, _ = self.SeqAtt(att, att, att, seq_mask)
-        att = self.drop(att)
-        x += att
+        x = self.SeqAttBlock(x, seq_mask)
 
-        x = x.permute(0, 2, 1, 3).contiguous() # b, seq, msa, dim
+        # msa-wise att
+        x = self.MSAAttBlock(x, msa_mask)
 
-        #print(x.shape, msa_mask.shape) # !!!
-        att = self.norm_layers[1](x)
-        att, _ = self.MSAAtt(att, att, att, msa_mask)
-        att = self.drop(att)
-        x += att
-
-        x = x.permute(0, 2, 1, 3).contiguous() # b, msa, seq, dim
-        
-        ff = self.norm_layers[2](x)
+        # feed-forward
+        ff = self.ff_norm_layer(x)
         ff = self.FF(ff)
-        x += ff
+        x = x + ff
+
+        return x
+
+class MHAttentionBlock(nn.Module):
+    def __init__(self, dim, heads, do, norm_layer, use_rope):
+        super().__init__()
+        self.norm = norm_layer(dim)
+        self.attn = MHAttention(dim, heads, use_rope)
+        self.drop = nn.Dropout(do)
+
+    def forward(self, x, mask):
+        att = self.norm(x)
+        att, _ = self.attn(att, att, att, mask)
+        att = self.drop(att)
+        x = x + att
+        x = x.permute(0, 2, 1, 3).contiguous()
 
         return x
         
-        
-
 class EncoderLayer(nn.Module):
-    def __init__(self, dim: int, heads: int, do: float, norm_layer):
+    def __init__(self, dim: int, heads: int, do: float,
+                 norm_layer: nn.Module, skip_att: bool):
+        # skip_att is a placeholder
         super().__init__()
         self.dim = dim
         self.heads = heads
@@ -251,10 +267,10 @@ class EncoderLayer(nn.Module):
         att = self.norm1(x)
         att, scores = self.Att(att, att, att, mask)
         att = self.drop(att)
-        x += att
+        x = x + att
 
         ff = self.norm2(x)
         ff = self.FF(ff)
-        x += ff
+        x = x + ff
 
         return x, scores

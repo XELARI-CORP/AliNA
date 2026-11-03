@@ -1,0 +1,9 @@
+vocab_size: 6
+dim: 256
+conv_layers: 2
+seq_encoders_order: [1, 1]
+struct_encoders_order: [1, 2, 1, 2]
+heads: 8
+convdrop: 0.15
+encdrop: 0.15
+skip_msa_att: True

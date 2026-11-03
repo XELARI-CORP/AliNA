@@ -1,0 +1,5 @@
+warmup: 1000
+peak: 2.0e-4
+c: 5.0e-4
+min_lr: 5.0e-5
+max_lr: 1.0e-3

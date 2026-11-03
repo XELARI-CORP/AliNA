@@ -1,0 +1,14 @@
+defaults:
+  - data: elina_ngs_ribonanza_with_msa
+  - hparams: elina_default
+  - const: elina_default
+  - lr_params: elina_default
+  - run_name_template: elina_default
+  - special_params: elina_default
+  - _self_
+
+run_name_prefix: "elina"
+work_dir: "/home/pavel/repos/AliNA/dev/experiments/elina"
+checkpoint_path : null
+experiment_name : "Alina-diffusion"
+random_seed: 42

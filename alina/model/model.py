@@ -15,8 +15,10 @@ class Model(nn.Module):
                  struct_encoders_order: int | List[int],
                  heads: int,
                  convdrop: float,
-                 conv_activation,
-                 norm_layer
+                 encdrop: float,
+                 conv_activation: nn.Module,
+                 norm_layer: nn.Module,
+                 skip_msa_att: bool
                 ):
         super().__init__()
         
@@ -47,12 +49,12 @@ class Model(nn.Module):
         
         # MSA Transformer Block
         self.seq_encoders_block, self.seq_encoders_order = make_encoder_block(
-            seq_encoders_order, dim, heads, 0.1,
-            MSATransformer, norm_layer)
+            seq_encoders_order, dim, heads, encdrop,
+            MSATransformer, norm_layer, skip_msa_att)
         
         # Encoder Block
         self.struct_encoders_block, self.struct_encoders_order = make_encoder_block(
-            struct_encoders_order, dim, heads, 0.1,
+            struct_encoders_order, dim, heads, encdrop,
             EncoderLayer, norm_layer)
         
         # Head
@@ -94,7 +96,7 @@ class Model(nn.Module):
             x = l(x, msa_mask, seq_mask)
             
         x = x[:,0,:,:]   # batch, msa, seq, dim -> batch, seq, dim
-        x += self.pos_enc(x.size(1), x.size(2), start_idx=1, device=x.device).to(x.dtype)
+        x = x + self.pos_enc(x.size(1), x.size(2), start_idx=1, device=x.device).to(x.dtype)
         # graph layer
         x = self.complementary_layer(x, struct_vec)
         # add nb embed
@@ -113,14 +115,14 @@ class Model(nn.Module):
 
         x = self.final_norm(x)
         x = torch.matmul(
-            torch.matmul(x, self.DotW), # @ dim,dim -> b, seq, dim
-            torch.transpose(x, 1, 2) # @ b, dim, seq -> b, seq, seq
-        )
+            torch.matmul(x, self.DotW), # b,seq+1,dim @ dim,dim -> b,seq+1,dim
+            torch.transpose(x, 1, 2) # b,seq+1,dim -> b,dim,seq+1
+        ) # b,seq+1,dim @ b,dim,seq+1 -> b, seq+1, seq+1
         x = x / self.final_dot_norm
         x = x + self.final_bias
         x = x - 1e7 * torch.eye(x.size(1), dtype=x.dtype, device=x.device).unsqueeze(0)
 
-        nbn, m = x[:, 0], x[:, 1:] # b, seq | b, seq-1, seq
+        nbn, m = x[:,0], x[:,1:] # b, seq+1 | b, seq, seq+1
         nbn = torch.sigmoid(nbn)
         m = torch.nn.functional.softmax(m, dim=-1)
         
