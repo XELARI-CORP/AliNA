@@ -1,9 +1,4 @@
 import sys
-sys.path.append('/usr/local/lib/python3.12/dist-packages')
-sys.path.append('/home/pavel/repos/AliNA')
-
-# import json
-# import fire
 import signal
 import torch
 import random
