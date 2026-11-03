@@ -41,7 +41,7 @@ Models
 ===
 - 'pretrained_augmented' - model from the original article trained on rnafold augmented structures and tuned on rfam data.
 - 'ngs_mfe_augmented' - model trained on rnafold augmented structures and tuned on NGS/coevolution filtered data (May 2025). More reliable.
-- 'ngs_ribonanza_trained' - model pre-trained and tuned on NGS/Ribonanza data, incorporating coevolution and reactivity (May 2026). 
+- 'ngs_reactivity_coevolution' - model pre-trained and tuned on NGS data, incorporating coevolution and reactivity (May 2026). 
 
 Usage
 ===
@@ -82,7 +82,7 @@ alina [-h] [-m {seq,file}] -i <Sequence or Fasta file> [-o <Output file>] [-th <
 ```
 import alina
 
-Alina = alina.AliNA.load(model="ngs_mfe_augmented")
+Alina = alina.AliNA.load(model="ngs_reactivity_coevolution")
 Alina = Alina.to("cuda")
                 
 struct = Alina.fold('UAGCGUAGGGGAAACGCCCGGUUACAUU')
