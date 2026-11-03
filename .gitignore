@@ -162,3 +162,8 @@ cython_debug/
 # tests tmp
 tests/tmp*
 dev/*
+
+# Hydra stuff
+configs/
+multirun/
+outputs/

@@ -87,9 +87,11 @@ class AliNA(Model):
                 path = package_path/"model"/"Pretrained_augmented.pth"
             elif model == "ngs_mfe_augmented":
                 path = package_path/"model"/"Ngs_mfe_augmented.pth"
+            elif model == "ngs_reactivity_coevolution":
+                path = package_path/"model"/"Ngs_reactivity_coevolution.pth"
             else:
-                path = package_path/"model"/"Ngs_mfe_augmented.pth"
-                print(f"Use 'ngs_mfe_augmented' model by default. "
+                path = package_path/"model"/"Ngs_reactivity_coevolution.pth"
+                print(f"Use 'ngs_reactivity_coevolution' model by default. "
                       f"You can choose from: ['pretrained_augmented', 'ngs_mfe_augmented']")
         
         state = torch.load(path, map_location='cpu', weights_only=True)

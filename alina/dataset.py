@@ -120,7 +120,7 @@ def make_collate(max_len: int, center_pad: bool):
                 Y[i, left:until, left:until] = y
 
             L.append(left)
-            Sl.append(n)
+            Sl.append(until)
         
         return X, Y, L, Sl
     
